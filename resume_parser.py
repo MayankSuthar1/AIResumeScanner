@@ -1,0 +1,300 @@
+import re
+import os
+import spacy
+from pdfminer.high_level import extract_text as extract_text_pdf
+import docx2txt
+
+# Load spaCy model
+try:
+    nlp = spacy.load("en_core_web_sm")
+except:
+    # If model not found, download it
+    import subprocess
+    subprocess.call(["python", "-m", "spacy", "download", "en_core_web_sm"])
+    nlp = spacy.load("en_core_web_sm")
+
+def extract_text_from_file(file_path):
+    """
+    Extract text from various file formats (PDF, DOCX, DOC)
+    """
+    file_ext = os.path.splitext(file_path)[1].lower()
+    
+    if file_ext == '.pdf':
+        return extract_text_pdf(file_path)
+    elif file_ext == '.docx':
+        return docx2txt.process(file_path)
+    elif file_ext == '.doc':
+        # Since python-docx doesn't handle .doc, we need to use textract or a conversion
+        # This is a simplified approach, in production would need more robust handling
+        try:
+            import textract
+            return textract.process(file_path).decode('utf-8')
+        except:
+            return "Unable to process .doc file. Please convert to .docx or .pdf"
+    else:
+        return "Unsupported file format"
+
+def extract_contact_info(text):
+    """
+    Extract email, phone number, and other contact information
+    """
+    contact_info = {}
+    
+    # Email extraction
+    email_pattern = r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b'
+    emails = re.findall(email_pattern, text)
+    if emails:
+        contact_info['email'] = emails[0]
+    
+    # Phone extraction
+    phone_pattern = r'(\+\d{1,3}[-.\s]?)?(\d{3}[-.\s]?\d{3}[-.\s]?\d{4}|\(\d{3}\)[-.\s]?\d{3}[-.\s]?\d{4})'
+    phones = re.findall(phone_pattern, text)
+    if phones:
+        # Join the parts of the matched phone and clean it up
+        contact_info['phone'] = ''.join(phones[0]).strip()
+    
+    # Simple name extraction - more advanced methods would be better in production
+    # This is a very simplistic approach
+    lines = text.split('\n')
+    non_empty_lines = [line.strip() for line in lines if line.strip()]
+    if non_empty_lines:
+        # Assuming the name is in the first few lines
+        for line in non_empty_lines[:3]:
+            # Exclude lines that seem to be emails, phones, or addresses
+            if not re.search(email_pattern, line) and not re.search(phone_pattern, line) and len(line.split()) <= 4:
+                contact_info['name'] = line
+                break
+    
+    return contact_info
+
+def extract_education(text):
+    """
+    Extract education information from resume text
+    """
+    # Common education keywords
+    education_keywords = [
+        'education', 'degree', 'university', 'college', 'school', 'bachelor', 
+        'master', 'phd', 'doctorate', 'certification', 'diploma'
+    ]
+    
+    education_info = []
+    lines = text.split('\n')
+    in_education_section = False
+    
+    # Define a pattern for education entries (degree, institution, year)
+    edu_pattern = r'(Bachelor|Master|MBA|PhD|BSc|MSc|B\.Tech|M\.Tech|B\.E|M\.E|B\.A|M\.A)'
+    
+    for i, line in enumerate(lines):
+        line = line.strip()
+        
+        # Check if this line marks the beginning of education section
+        if any(keyword.lower() in line.lower() for keyword in education_keywords) and len(line) < 50:
+            in_education_section = True
+            if line.lower() != 'education':  # If it's not just the section title
+                education_info.append(line)
+            continue
+        
+        # Check for the end of education section (next section header)
+        if in_education_section and line and line[0].isupper() and line.endswith(':'):
+            in_education_section = False
+            continue
+        
+        # If we're in education section or line matches education pattern, add it
+        if in_education_section and line:
+            education_info.append(line)
+        elif re.search(edu_pattern, line) and len(line) < 100:
+            education_info.append(line)
+    
+    # If no structured education section is found, try to extract using NLP
+    if not education_info:
+        doc = nlp(text)
+        for ent in doc.ents:
+            if ent.label_ == 'ORG' and any(keyword.lower() in ent.text.lower() for keyword in ['university', 'college', 'school']):
+                # Find the surrounding context
+                context_start = max(0, ent.start_char - 50)
+                context_end = min(len(text), ent.end_char + 50)
+                context = text[context_start:context_end]
+                education_info.append(context.strip())
+    
+    # Remove duplicates and clean up
+    clean_education = []
+    for item in education_info:
+        item = re.sub(r'\s+', ' ', item).strip()
+        if item and item not in clean_education and len(item) > 3:
+            clean_education.append(item)
+    
+    return clean_education[:5]  # Limit to 5 entries to avoid over-extraction
+
+def extract_experience(text):
+    """
+    Extract work experience information from resume text
+    """
+    # Common experience section keywords
+    experience_keywords = [
+        'experience', 'employment', 'work history', 'professional experience',
+        'career', 'job history', 'positions'
+    ]
+    
+    experience_info = []
+    lines = text.split('\n')
+    in_experience_section = False
+    current_entry = []
+    
+    for i, line in enumerate(lines):
+        line = line.strip()
+        
+        # Check if this line marks the beginning of experience section
+        if any(keyword.lower() in line.lower() for keyword in experience_keywords) and len(line) < 50:
+            in_experience_section = True
+            continue
+        
+        # Check for the end of experience section (next section header)
+        if in_experience_section and line and line[0].isupper() and line.endswith(':'):
+            if any(keyword.lower() in line.lower() for keyword in ['education', 'skills', 'projects']):
+                in_experience_section = False
+                if current_entry:
+                    experience_info.append(' '.join(current_entry))
+                    current_entry = []
+                continue
+        
+        # Process lines in the experience section
+        if in_experience_section and line:
+            # If line looks like a new job entry (company name or job title)
+            if (re.search(r'\b(19|20)\d{2}\b', line) or 
+                len(line) < 50 and any(char.isupper() for char in line)):
+                if current_entry:
+                    experience_info.append(' '.join(current_entry))
+                    current_entry = []
+                current_entry.append(line)
+            elif current_entry:
+                current_entry.append(line)
+    
+    # Add the last entry if there is one
+    if current_entry:
+        experience_info.append(' '.join(current_entry))
+    
+    # If no structured experience section found, try to extract using dates and organizations
+    if not experience_info:
+        # Look for date ranges which often indicate job periods
+        date_pattern = r'(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec|January|February|March|April|May|June|July|August|September|October|November|December)[\s,]+\d{4}\s*[-–—]\s*(Present|Current|Now|(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec|January|February|March|April|May|June|July|August|September|October|November|December)[\s,]+\d{4})'
+        matches = re.finditer(date_pattern, text, re.IGNORECASE)
+        
+        for match in matches:
+            start_pos = max(0, match.start() - 100)
+            end_pos = min(len(text), match.end() + 200)
+            context = text[start_pos:end_pos].strip()
+            experience_info.append(context)
+    
+    # Clean up the experience entries
+    clean_experience = []
+    for item in experience_info:
+        item = re.sub(r'\s+', ' ', item).strip()
+        if item and len(item) > 10 and item not in clean_experience:
+            # Truncate very long entries
+            if len(item) > 300:
+                item = item[:300] + "..."
+            clean_experience.append(item)
+    
+    return clean_experience[:5]  # Limit to 5 entries to avoid over-extraction
+
+def extract_skills(text):
+    """
+    Extract skills from resume text
+    """
+    # Common technical skills
+    technical_skills = [
+        'python', 'java', 'javascript', 'typescript', 'c\\+\\+', 'c#', 'ruby', 'php', 'html', 'css',
+        'sql', 'nosql', 'mongodb', 'mysql', 'postgresql', 'oracle', 'aws', 'azure', 'gcp',
+        'react', 'angular', 'vue', 'node', 'express', 'django', 'flask', 'spring', 'bootstrap',
+        'docker', 'kubernetes', 'jenkins', 'git', 'agile', 'scrum', 'jira', 'devops', 'ci/cd',
+        'machine learning', 'deep learning', 'data science', 'artificial intelligence', 'ai', 'nlp',
+        'tensorflow', 'pytorch', 'keras', 'pandas', 'numpy', 'scikit-learn', 'matplotlib',
+        'power bi', 'tableau', 'excel', 'spss', 'sas', 'r', 'hadoop', 'spark', 'kafka', 'airflow',
+        'rest api', 'graphql', 'microservices', 'soa', 'oauth', 'saml', 'ldap',
+        'linux', 'unix', 'windows', 'macos', 'bash', 'powershell', 'networking', 'tcp/ip'
+    ]
+    
+    # Common soft skills
+    soft_skills = [
+        'communication', 'teamwork', 'leadership', 'problem solving', 'critical thinking',
+        'time management', 'project management', 'creativity', 'adaptability', 'flexibility',
+        'organization', 'prioritization', 'attention to detail', 'analytical skills',
+        'interpersonal skills', 'conflict resolution', 'negotiation', 'presentation',
+        'decision making', 'stress management', 'mentoring', 'coaching'
+    ]
+    
+    all_skills = technical_skills + soft_skills
+    skills_found = set()
+    
+    # 1. Look for skills section
+    skills_section_pattern = r'(?i)skills[\s:]*\n(.*?)(?:\n\n|\n[A-Z]|\Z)'
+    skills_match = re.search(skills_section_pattern, text, re.DOTALL)
+    
+    if skills_match:
+        skills_text = skills_match.group(1)
+        # Split by common delimiters
+        for delimiter in [',', '•', '·', '-', '|', '\n']:
+            if delimiter in skills_text:
+                skills_list = [s.strip() for s in skills_text.split(delimiter) if s.strip()]
+                if skills_list:
+                    for skill in skills_list:
+                        if 3 <= len(skill) <= 30:  # Reasonable skill name length
+                            skills_found.add(skill.lower())
+    
+    # 2. Search for known skills in the entire text
+    for skill in all_skills:
+        pattern = r'\b' + skill + r'\b'
+        if re.search(pattern, text.lower()):
+            skills_found.add(skill)
+    
+    # 3. Use NLP to extract technical entities
+    doc = nlp(text)
+    for ent in doc.ents:
+        if ent.label_ == 'PRODUCT' and 3 <= len(ent.text) <= 20:
+            # Check if likely to be a technical product/skill
+            lowercase_text = ent.text.lower()
+            if any(tech_term in lowercase_text for tech_term in ['software', 'framework', 'library', 'language', 'platform', 'tool']):
+                skills_found.add(ent.text.lower())
+    
+    # Convert to list and sort alphabetically
+    skills_list = sorted(list(skills_found))
+    
+    # Limit to top N skills to avoid noise
+    return skills_list[:30]
+
+def parse_resume(file_path, filename):
+    """
+    Parse a resume file and extract structured information
+    """
+    # Extract text from the file
+    text = extract_text_from_file(file_path)
+    
+    if not text or text.startswith("Unable to process"):
+        return {
+            "filename": filename,
+            "status": "error",
+            "error_message": text if text else "Failed to extract text from file"
+        }
+    
+    # Extract contact information
+    contact_info = extract_contact_info(text)
+    
+    # Extract education information
+    education = extract_education(text)
+    
+    # Extract experience information
+    experience = extract_experience(text)
+    
+    # Extract skills
+    skills = extract_skills(text)
+    
+    # Return structured information
+    return {
+        "filename": filename,
+        "status": "success",
+        "raw_text": text,
+        "contact_info": contact_info,
+        "education": education,
+        "experience": experience,
+        "skills": skills
+    }
