@@ -4,6 +4,8 @@ import spacy
 import io
 from PyPDF2 import PdfReader
 import docx2txt
+from ai_helper import extract_resume_info
+from database import save_resume
 
 # Load spaCy model
 try:
