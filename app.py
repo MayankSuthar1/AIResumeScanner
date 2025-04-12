@@ -7,7 +7,7 @@ from resume_parser import parse_resume
 from job_analyzer import extract_job_requirements
 from relevance_scorer import calculate_relevance_scores, rank_resumes
 from utils import allowed_file, display_resume_feedback
-from database import get_all_resumes, get_resume_by_id
+from database import get_all_resumes, get_resume_by_id, get_job_matches_by_resume_id
 
 # Page config
 st.set_page_config(
@@ -40,6 +40,8 @@ if 'processing_started' not in st.session_state:
     st.session_state.processing_started = False
 if 'step' not in st.session_state:
     st.session_state.step = 1
+if 'show_database_view' not in st.session_state:
+    st.session_state.show_database_view = False
 
 # Sidebar for application steps
 with st.sidebar:
@@ -176,22 +178,103 @@ elif st.session_state.step == 3 and st.session_state.processing_complete:
     with st.expander("Job Requirements Analysis", expanded=True):
         st.subheader("Required Skills")
         
-        # Convert the skills to a DataFrame for better display
-        skills_df = pd.DataFrame({
-            "Skills": list(st.session_state.job_requirements.get("skills", [])),
-            "Category": ["Technical" for _ in st.session_state.job_requirements.get("skills", [])]
-        })
+        # Handle both old and new formats for skills
+        skills = st.session_state.job_requirements.get("skills", [])
         
-        if not skills_df.empty:
-            st.dataframe(skills_df, hide_index=True)
+        if isinstance(skills, dict):
+            # New AI format with technical and soft skills
+            tech_skills = skills.get("technical", [])
+            soft_skills = skills.get("soft", [])
+            
+            if tech_skills or soft_skills:
+                all_skills = []
+                all_categories = []
+                
+                for skill in tech_skills:
+                    all_skills.append(skill)
+                    all_categories.append("Technical")
+                
+                for skill in soft_skills:
+                    all_skills.append(skill)
+                    all_categories.append("Soft")
+                
+                skills_df = pd.DataFrame({
+                    "Skills": all_skills,
+                    "Category": all_categories
+                })
+                
+                st.dataframe(skills_df, hide_index=True)
+            else:
+                st.info("No specific skills identified in the job description.")
         else:
-            st.info("No specific skills identified in the job description.")
+            # Old format with just a list of skills
+            if skills:
+                skills_df = pd.DataFrame({
+                    "Skills": list(skills),
+                    "Category": ["Technical" for _ in skills]
+                })
+                st.dataframe(skills_df, hide_index=True)
+            else:
+                st.info("No specific skills identified in the job description.")
         
         st.subheader("Required Experience")
-        st.write(", ".join(st.session_state.job_requirements.get("experience", ["Not specified"])))
+        experience = st.session_state.job_requirements.get("experience", [])
+        
+        if isinstance(experience, list) and all(isinstance(item, dict) for item in experience):
+            # New AI format with structured experience requirements
+            for exp in experience:
+                years = exp.get("years", "Not specified")
+                domain = exp.get("domain", "")
+                if domain:
+                    st.write(f"• {years} in {domain}")
+                else:
+                    st.write(f"• {years}")
+        else:
+            # Old format with simple list
+            if experience:
+                st.write(", ".join(experience))
+            else:
+                st.write("Not specified")
         
         st.subheader("Required Education")
-        st.write(", ".join(st.session_state.job_requirements.get("education", ["Not specified"])))
+        education = st.session_state.job_requirements.get("education", [])
+        
+        if isinstance(education, list) and all(isinstance(item, dict) for item in education):
+            # New AI format with structured education requirements
+            for edu in education:
+                degree = edu.get("degree", "")
+                field = edu.get("field", "")
+                if degree and field:
+                    st.write(f"• {degree} in {field}")
+                elif degree:
+                    st.write(f"• {degree}")
+                elif field:
+                    st.write(f"• Degree in {field}")
+        else:
+            # Old format with simple list
+            if education:
+                st.write(", ".join(education))
+            else:
+                st.write("Not specified")
+                
+        # Display additional AI-extracted information if available
+        if "responsibilities" in st.session_state.job_requirements:
+            st.subheader("Job Responsibilities")
+            resp_list = st.session_state.job_requirements.get("responsibilities", [])
+            if resp_list:
+                for resp in resp_list:
+                    st.write(f"• {resp}")
+            else:
+                st.write("Not specified")
+                
+        if "preferred_qualifications" in st.session_state.job_requirements:
+            st.subheader("Preferred Qualifications")
+            pref_list = st.session_state.job_requirements.get("preferred_qualifications", [])
+            if pref_list:
+                for pref in pref_list:
+                    st.write(f"• {pref}")
+            else:
+                st.write("Not specified")
     
     # Display ranked resumes
     st.subheader("Ranked Resumes")
