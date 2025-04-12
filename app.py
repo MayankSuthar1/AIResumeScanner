@@ -7,6 +7,7 @@ from resume_parser import parse_resume
 from job_analyzer import extract_job_requirements
 from relevance_scorer import calculate_relevance_scores, rank_resumes
 from utils import allowed_file, display_resume_feedback
+from database import get_all_resumes, get_resume_by_id
 
 # Page config
 st.set_page_config(
@@ -142,9 +143,19 @@ elif st.session_state.step == 2:
             
             # Calculate scores and rank resumes
             with st.spinner("Calculating relevance scores and ranking resumes..."):
+                # Extract job title from the description (first line or default)
+                job_title = ""
+                if job_description:
+                    lines = job_description.strip().split('\n')
+                    if lines:
+                        job_title = lines[0][:50]  # First line, truncated to 50 chars
+                
+                # Calculate relevance scores using AI
                 relevance_scores = calculate_relevance_scores(
                     st.session_state.parsed_resumes, 
-                    st.session_state.job_requirements
+                    st.session_state.job_requirements,
+                    job_title=job_title,
+                    job_description=job_description
                 )
                 
                 ranked_resumes = rank_resumes(
@@ -191,15 +202,35 @@ elif st.session_state.step == 3 and st.session_state.processing_complete:
         for i, resume in enumerate(st.session_state.ranked_resumes):
             with st.expander(f"{i+1}. {resume['filename']} - Match Score: {resume['match_score']:.2f}%", expanded=i == 0):
                 
+                # Get parsed data (either from AI or traditional)
+                parsed_data = resume.get("parsed_data", {})
+                resume_id = resume.get("resume_id")
+                
                 # Display resume content in columns
                 col1, col2 = st.columns(2)
                 
                 with col1:
                     st.markdown("##### Contact Information")
-                    st.write(resume.get("contact_info", "Not available"))
+                    contact_info = parsed_data.get("contact_info", {})
+                    if contact_info:
+                        st.write(f"**Name:** {contact_info.get('name', 'Not available')}")
+                        st.write(f"**Email:** {contact_info.get('email', 'Not available')}")
+                        st.write(f"**Phone:** {contact_info.get('phone', 'Not available')}")
+                        st.write(f"**Location:** {contact_info.get('location', 'Not available')}")
+                    else:
+                        st.write(resume.get("contact_info", "Not available"))
                     
                     st.markdown("##### Skills")
-                    if resume.get("skills"):
+                    skills = parsed_data.get("skills", {})
+                    if isinstance(skills, dict) and (skills.get("technical") or skills.get("soft")):
+                        if skills.get("technical"):
+                            st.write("**Technical Skills:**")
+                            st.write(", ".join(skills.get("technical", [])))
+                        if skills.get("soft"):
+                            st.write("**Soft Skills:**")
+                            st.write(", ".join(skills.get("soft", [])))
+                    elif resume.get("skills"):
+                        # Fallback to old format
                         skills_list = resume.get("skills", [])
                         st.write(", ".join(skills_list))
                     else:
@@ -207,25 +238,107 @@ elif st.session_state.step == 3 and st.session_state.processing_complete:
                 
                 with col2:
                     st.markdown("##### Education")
-                    if resume.get("education"):
+                    education = parsed_data.get("education", [])
+                    if education and isinstance(education, list):
+                        for edu in education:
+                            if isinstance(edu, dict):
+                                st.write(f"**Degree:** {edu.get('degree', 'N/A')}")
+                                st.write(f"**Institution:** {edu.get('institution', 'N/A')}")
+                                if edu.get('graduation_date'):
+                                    st.write(f"**Graduation Date:** {edu.get('graduation_date')}")
+                                if edu.get('gpa'):
+                                    st.write(f"**GPA:** {edu.get('gpa')}")
+                                st.write("---")
+                            else:
+                                st.write(edu)
+                    elif resume.get("education"):
+                        # Fallback to old format
                         for edu in resume.get("education", []):
                             st.write(edu)
                     else:
                         st.info("No education information identified")
                     
                     st.markdown("##### Experience")
-                    if resume.get("experience"):
+                    experience = parsed_data.get("experience", [])
+                    if experience and isinstance(experience, list):
+                        for exp in experience:
+                            if isinstance(exp, dict):
+                                st.write(f"**Title:** {exp.get('title', 'N/A')}")
+                                st.write(f"**Company:** {exp.get('company', 'N/A')}")
+                                if exp.get('start_date') and exp.get('end_date'):
+                                    st.write(f"**Period:** {exp.get('start_date')} to {exp.get('end_date')}")
+                                if exp.get('description'):
+                                    st.write(f"**Description:** {exp.get('description')}")
+                                if exp.get('achievements'):
+                                    st.write("**Achievements:**")
+                                    for achievement in exp.get('achievements', []):
+                                        st.write(f"- {achievement}")
+                                st.write("---")
+                            else:
+                                st.write(exp)
+                    elif resume.get("experience"):
+                        # Fallback to old format
                         for exp in resume.get("experience", []):
                             st.write(exp)
                     else:
                         st.info("No experience information identified")
                 
-                # Display feedback
-                st.markdown("##### Feedback")
-                display_resume_feedback(
-                    resume, 
-                    st.session_state.job_requirements
-                )
+                # Display match analysis and feedback
+                st.markdown("##### Match Analysis")
+                
+                match_analysis = resume.get("match_analysis", {})
+                if match_analysis:
+                    scores = match_analysis.get("scores", {})
+                    
+                    # Create columns for different score types
+                    score_col1, score_col2, score_col3, score_col4 = st.columns(4)
+                    
+                    with score_col1:
+                        st.metric("Overall", f"{scores.get('overall_match', 0)}%")
+                    with score_col2:
+                        st.metric("Skills", f"{scores.get('skills_match', 0)}%")
+                    with score_col3:
+                        st.metric("Experience", f"{scores.get('experience_match', 0)}%")
+                    with score_col4:
+                        st.metric("Education", f"{scores.get('education_match', 0)}%")
+                    
+                    # Display matching and missing skills
+                    matching_skills = match_analysis.get("matching_skills", [])
+                    missing_skills = match_analysis.get("missing_skills", [])
+                    
+                    skill_col1, skill_col2 = st.columns(2)
+                    
+                    with skill_col1:
+                        st.write("**Matching Skills:**")
+                        if matching_skills:
+                            st.write(", ".join(matching_skills))
+                        else:
+                            st.info("No matching skills found")
+                    
+                    with skill_col2:
+                        st.write("**Missing Skills:**")
+                        if missing_skills:
+                            st.write(", ".join(missing_skills))
+                        else:
+                            st.info("No missing skills")
+                    
+                    # Display recommendations
+                    st.write("**Recommendations:**")
+                    recommendations = match_analysis.get("recommendations", [])
+                    if recommendations:
+                        for rec in recommendations:
+                            st.write(f"- {rec}")
+                    
+                    # Display summary
+                    st.write("**Summary:**")
+                    st.write(match_analysis.get("feedback_summary", "No summary available"))
+                    
+                    # Display DB ID for reference if available
+                    if resume_id:
+                        st.caption(f"Resume ID: {resume_id}")
+                else:
+                    # Fallback to simple feedback
+                    display_resume_feedback(resume, st.session_state.job_requirements)
     
     # Buttons for navigation
     col1, col2 = st.columns([3, 1])

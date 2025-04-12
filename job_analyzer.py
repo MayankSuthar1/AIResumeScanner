@@ -1,6 +1,8 @@
 import re
 import spacy
 from collections import Counter
+from ai_helper import analyze_job_description
+from database import save_job_match
 
 # Load spaCy model
 try:
@@ -13,8 +15,16 @@ except:
 
 def extract_job_requirements(job_description):
     """
-    Extract key requirements from a job description
+    Extract key requirements from a job description using Gemini AI
     """
+    try:
+        # Use Gemini AI to analyze job description
+        print("Using Gemini AI to analyze job description...")
+        job_info = analyze_job_description(job_description)
+        return job_info
+    except Exception as e:
+        print(f"AI analysis failed: {e}, falling back to traditional parsing")
+        # Fall back to traditional parsing if AI analysis fails
     # Process the job description with spaCy
     doc = nlp(job_description)
     

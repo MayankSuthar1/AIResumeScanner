@@ -273,7 +273,7 @@ def extract_skills(text):
 
 def parse_resume(file_path, filename):
     """
-    Parse a resume file and extract structured information
+    Parse a resume file and extract structured information using AI
     """
     # Extract text from the file
     text = extract_text_from_file(file_path)
@@ -285,25 +285,56 @@ def parse_resume(file_path, filename):
             "error_message": text if text else "Failed to extract text from file"
         }
     
-    # Extract contact information
-    contact_info = extract_contact_info(text)
-    
-    # Extract education information
-    education = extract_education(text)
-    
-    # Extract experience information
-    experience = extract_experience(text)
-    
-    # Extract skills
-    skills = extract_skills(text)
-    
-    # Return structured information
-    return {
-        "filename": filename,
-        "status": "success",
-        "raw_text": text,
-        "contact_info": contact_info,
-        "education": education,
-        "experience": experience,
-        "skills": skills
-    }
+    try:
+        # Use Gemini AI to extract structured information
+        print("Using Gemini AI to extract resume information...")
+        parsed_data = extract_resume_info(text)
+        
+        # Save to database
+        db_resume = save_resume(filename, text, parsed_data)
+        resume_id = db_resume.id if db_resume else None
+        
+        # Return structured information
+        return {
+            "filename": filename,
+            "status": "success",
+            "raw_text": text,
+            "parsed_data": parsed_data,
+            "resume_id": resume_id  # Include database ID for reference
+        }
+    except Exception as e:
+        print(f"AI extraction failed: {e}, falling back to traditional parsing")
+        # Fall back to traditional parsing if AI extraction fails
+        
+        # Extract contact information
+        contact_info = extract_contact_info(text)
+        
+        # Extract education information
+        education = extract_education(text)
+        
+        # Extract experience information
+        experience = extract_experience(text)
+        
+        # Extract skills
+        skills = extract_skills(text)
+        
+        # Create a structured data format similar to the AI output
+        fallback_data = {
+            "contact_info": contact_info,
+            "education": [{"institution": edu} for edu in education],
+            "experience": [{"description": exp} for exp in experience],
+            "skills": {"technical": skills, "soft": []}
+        }
+        
+        # Save fallback data to database
+        db_resume = save_resume(filename, text, fallback_data)
+        resume_id = db_resume.id if db_resume else None
+        
+        # Return structured information
+        return {
+            "filename": filename,
+            "status": "success", 
+            "raw_text": text,
+            "parsed_data": fallback_data,
+            "resume_id": resume_id
+        }
