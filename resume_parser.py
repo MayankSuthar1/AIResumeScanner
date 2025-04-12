@@ -2,8 +2,13 @@ import re
 import os
 import spacy
 import io
+import subprocess
 from PyPDF2 import PdfReader
 import docx2txt
+import pytesseract
+from pdf2image import convert_from_path
+from PIL import Image
+import tempfile
 from ai_helper import extract_resume_info
 from database import save_resume
 
@@ -16,30 +21,144 @@ except:
     subprocess.call(["python", "-m", "spacy", "download", "en_core_web_sm"])
     nlp = spacy.load("en_core_web_sm")
 
+def check_if_pdf_is_scanned(pdf_path):
+    """
+    Check if a PDF contains mostly images (scanned document) or searchable text
+    """
+    text = ""
+    try:
+        with open(pdf_path, 'rb') as file:
+            reader = PdfReader(file)
+            for page in reader.pages:
+                page_text = page.extract_text() or ""
+                text += page_text
+    except Exception as e:
+        print(f"Error checking PDF type: {e}")
+        return True  # Assume scanned if we can't check properly
+    
+    # If text length is very short compared to usual resume length, it's likely a scanned document
+    if len(text.strip()) < 100:
+        return True
+    
+    return False
+
+def ocr_pdf(pdf_path):
+    """
+    Perform OCR on PDF that is identified as a scanned document
+    """
+    print("Performing OCR on scanned PDF document...")
+    
+    try:
+        # Create a temporary directory to store the images
+        with tempfile.TemporaryDirectory() as temp_dir:
+            # Convert PDF pages to images
+            images = convert_from_path(pdf_path)
+            
+            full_text = ""
+            for i, image in enumerate(images):
+                # Save each image temporarily
+                img_path = os.path.join(temp_dir, f'page_{i}.png')
+                image.save(img_path, 'PNG')
+                
+                # Perform OCR on the image
+                text = pytesseract.image_to_string(Image.open(img_path))
+                full_text += text + "\n\n"
+            
+            return full_text
+    except Exception as e:
+        print(f"OCR failed: {e}")
+        return ""
+
+def try_pdfminer_extraction(pdf_path):
+    """
+    Try extracting text using pdfminer if PyPDF2 doesn't work well
+    """
+    try:
+        from pdfminer.high_level import extract_text as pdfminer_extract
+        return pdfminer_extract(pdf_path)
+    except Exception as e:
+        print(f"pdfminer extraction failed: {e}")
+        return ""
+
 def extract_text_from_file(file_path):
     """
-    Extract text from various file formats (PDF, DOCX, DOC)
+    Extract text from various file formats (PDF, DOCX, DOC) with enhanced capabilities
+    including OCR for scanned documents
     """
     file_ext = os.path.splitext(file_path)[1].lower()
     
     if file_ext == '.pdf':
-        # Use PyPDF2 instead of pdfminer
+        # First check if it's a scanned PDF
+        if check_if_pdf_is_scanned(file_path):
+            # Try OCR if it's a scanned document
+            text = ocr_pdf(file_path)
+            if text and len(text.strip()) > 100:
+                return text
+        
+        # Try regular PDF extraction with PyPDF2
         text = ""
-        with open(file_path, 'rb') as file:
-            reader = PdfReader(file)
-            for page in reader.pages:
-                text += page.extract_text() + "\n"
+        try:
+            with open(file_path, 'rb') as file:
+                reader = PdfReader(file)
+                for page in reader.pages:
+                    text += (page.extract_text() or "") + "\n"
+        except Exception as e:
+            print(f"PyPDF2 extraction failed: {e}")
+        
+        # If PyPDF2 extraction produced little text, try pdfminer
+        if not text or len(text.strip()) < 100:
+            pdfminer_text = try_pdfminer_extraction(file_path)
+            if pdfminer_text and len(pdfminer_text.strip()) > len(text.strip()):
+                text = pdfminer_text
+        
+        # If still not enough text, try OCR even if not initially detected as scanned
+        if not text or len(text.strip()) < 100:
+            ocr_text = ocr_pdf(file_path)
+            if ocr_text and len(ocr_text.strip()) > len(text.strip()):
+                text = ocr_text
+        
         return text
+    
     elif file_ext == '.docx':
-        return docx2txt.process(file_path)
+        try:
+            return docx2txt.process(file_path)
+        except Exception as e:
+            print(f"DOCX extraction failed: {e}")
+            # Try python-docx as fallback
+            try:
+                from docx import Document
+                doc = Document(file_path)
+                return "\n".join([paragraph.text for paragraph in doc.paragraphs])
+            except Exception as e2:
+                print(f"python-docx extraction failed: {e2}")
+                return "Failed to extract text from DOCX file"
+    
     elif file_ext == '.doc':
-        # Since python-docx doesn't handle .doc, we need to use textract or a conversion
-        # This is a simplified approach, in production would need more robust handling
+        # Try multiple approaches for .doc files
+        text = ""
+        
+        # Try textract
         try:
             import textract
-            return textract.process(file_path).decode('utf-8')
-        except:
+            text = textract.process(file_path).decode('utf-8')
+            if text and len(text.strip()) > 100:
+                return text
+        except Exception as e:
+            print(f"textract extraction failed: {e}")
+        
+        # Try antiword if available
+        try:
+            result = subprocess.run(['antiword', file_path], capture_output=True, text=True)
+            if result.returncode == 0 and result.stdout:
+                return result.stdout
+        except Exception as e:
+            print(f"antiword extraction failed: {e}")
+        
+        # If all else fails, suggest conversion
+        if not text:
             return "Unable to process .doc file. Please convert to .docx or .pdf"
+        return text
+    
     else:
         return "Unsupported file format"
 
