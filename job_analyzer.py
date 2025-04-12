@@ -112,7 +112,7 @@ def extract_job_requirements(job_description):
     
     # Extract education requirements
     education_patterns = [
-        r'(bachelor|master|phd|doctorate|mba|bs|ms|ba|ma)[\''s]*\s+(degree|in|of)',
+        r'(bachelor|master|phd|doctorate|mba|bs|ms|ba|ma)[\'s]*\s+(degree|in|of)',
         r'degree\s+in\s+([a-z\s]+)',
         r'(certification|diploma)\s+in\s+([a-z\s]+)'
     ]

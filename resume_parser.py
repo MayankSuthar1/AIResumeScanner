@@ -1,7 +1,8 @@
 import re
 import os
 import spacy
-from pdfminer.high_level import extract_text as extract_text_pdf
+import io
+from PyPDF2 import PdfReader
 import docx2txt
 
 # Load spaCy model
@@ -20,7 +21,13 @@ def extract_text_from_file(file_path):
     file_ext = os.path.splitext(file_path)[1].lower()
     
     if file_ext == '.pdf':
-        return extract_text_pdf(file_path)
+        # Use PyPDF2 instead of pdfminer
+        text = ""
+        with open(file_path, 'rb') as file:
+            reader = PdfReader(file)
+            for page in reader.pages:
+                text += page.extract_text() + "\n"
+        return text
     elif file_ext == '.docx':
         return docx2txt.process(file_path)
     elif file_ext == '.doc':
