@@ -312,12 +312,6 @@ elif st.session_state.step == 2:
         value=st.session_state.job_description
     )
     
-    jd_file = st.file_uploader("Or upload a job description file (TXT)", type=["txt"])
-    
-    if jd_file is not None:
-        job_description = jd_file.getvalue().decode("utf-8")
-        st.text_area("Job Description from File:", value=job_description, height=200)
-    
     col1, col2 = st.columns([3, 1])
     
     with col1:
@@ -326,7 +320,8 @@ elif st.session_state.step == 2:
             st.rerun()
     
     with col2:
-        if job_description and st.button("Analyze Resumes"):
+        analyze_btn = st.button("Analyze Resumes")
+        if analyze_btn and job_description:
             st.session_state.job_description = job_description
             st.session_state.processing_started = True
             
