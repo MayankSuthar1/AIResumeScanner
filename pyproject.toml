@@ -20,4 +20,5 @@ dependencies = [
     "sqlalchemy>=2.0.40",
     "streamlit>=1.44.1",
     "textract>=1.5.0",
+    "trafilatura>=2.0.0",
 ]
