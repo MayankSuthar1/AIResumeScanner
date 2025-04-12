@@ -56,15 +56,225 @@ with st.sidebar:
                               disabled=st.session_state.step == 3,
                               type="primary" if st.session_state.step == 3 else "secondary")
     
+    st.sidebar.markdown("---")
+    st.sidebar.subheader("Database")
+    
+    # Toggle database view
+    db_view = st.sidebar.button(
+        "Previously Parsed Resumes",
+        type="primary" if st.session_state.show_database_view else "secondary"
+    )
+    
+    if db_view:
+        st.session_state.show_database_view = not st.session_state.show_database_view
+        st.rerun()
+    
     if step_1:
         st.session_state.step = 1
+        st.session_state.show_database_view = False
         st.rerun()
     if step_2:
         st.session_state.step = 2
+        st.session_state.show_database_view = False
         st.rerun()
     if step_3 and st.session_state.processing_complete:
         st.session_state.step = 3
+        st.session_state.show_database_view = False
         st.rerun()
+
+# Database View
+if st.session_state.show_database_view:
+    st.header("Previously Parsed Resumes")
+    
+    with st.spinner("Loading resumes from database..."):
+        try:
+            # Fetch all resumes from the database
+            stored_resumes = get_all_resumes()
+            
+            if not stored_resumes:
+                st.info("No resumes found in the database.")
+            else:
+                # Create a selection mechanism
+                resume_options = {f"{resume.contact_name} - {resume.filename} (ID: {resume.id})": resume.id 
+                                 for resume in stored_resumes if resume.contact_name}
+                
+                # Add options for resumes without contact names
+                for resume in stored_resumes:
+                    if not resume.contact_name:
+                        resume_options[f"Unknown - {resume.filename} (ID: {resume.id})"] = resume.id
+                
+                selected_resume = st.selectbox(
+                    "Select a resume to view:",
+                    options=list(resume_options.keys())
+                )
+                
+                if selected_resume:
+                    resume_id = resume_options[selected_resume]
+                    resume = get_resume_by_id(resume_id)
+                    
+                    if resume:
+                        # Display resume details
+                        parsed_data = resume.parsed_data if resume.parsed_data else {}
+                        
+                        # Create tabs for resume details and job matches
+                        tab1, tab2 = st.tabs(["Resume Details", "Job Matches"])
+                        
+                        with tab1:
+                            # Display resume content in columns
+                            col1, col2 = st.columns(2)
+                            
+                            with col1:
+                                st.markdown("##### Contact Information")
+                                if resume.contact_name:
+                                    st.write(f"**Name:** {resume.contact_name}")
+                                if resume.contact_email:
+                                    st.write(f"**Email:** {resume.contact_email}")
+                                if resume.contact_phone:
+                                    st.write(f"**Phone:** {resume.contact_phone}")
+                                if resume.contact_location:
+                                    st.write(f"**Location:** {resume.contact_location}")
+                                
+                                st.markdown("##### Skills")
+                                skills = parsed_data.get("skills", {})
+                                if isinstance(skills, dict) and (skills.get("technical") or skills.get("soft")):
+                                    if skills.get("technical"):
+                                        st.write("**Technical Skills:**")
+                                        st.write(", ".join(skills.get("technical", [])))
+                                    if skills.get("soft"):
+                                        st.write("**Soft Skills:**")
+                                        st.write(", ".join(skills.get("soft", [])))
+                                elif "skills" in parsed_data and isinstance(parsed_data["skills"], list):
+                                    # Old format
+                                    st.write(", ".join(parsed_data["skills"]))
+                                else:
+                                    st.info("No skills identified")
+                            
+                            with col2:
+                                st.markdown("##### Education")
+                                education = parsed_data.get("education", [])
+                                if education and isinstance(education, list):
+                                    for edu in education:
+                                        if isinstance(edu, dict):
+                                            st.write(f"**Degree:** {edu.get('degree', 'N/A')}")
+                                            st.write(f"**Institution:** {edu.get('institution', 'N/A')}")
+                                            if edu.get('graduation_date'):
+                                                st.write(f"**Graduation Date:** {edu.get('graduation_date')}")
+                                            if edu.get('gpa'):
+                                                st.write(f"**GPA:** {edu.get('gpa')}")
+                                            st.write("---")
+                                        else:
+                                            st.write(edu)
+                                else:
+                                    st.info("No education information identified")
+                                
+                                st.markdown("##### Experience")
+                                experience = parsed_data.get("experience", [])
+                                if experience and isinstance(experience, list):
+                                    for exp in experience:
+                                        if isinstance(exp, dict):
+                                            st.write(f"**Title:** {exp.get('title', 'N/A')}")
+                                            st.write(f"**Company:** {exp.get('company', 'N/A')}")
+                                            if exp.get('start_date') and exp.get('end_date'):
+                                                st.write(f"**Period:** {exp.get('start_date')} to {exp.get('end_date')}")
+                                            if exp.get('description'):
+                                                st.write(f"**Description:** {exp.get('description')}")
+                                            if exp.get('achievements'):
+                                                st.write("**Achievements:**")
+                                                for achievement in exp.get('achievements', []):
+                                                    st.write(f"- {achievement}")
+                                            st.write("---")
+                                        else:
+                                            st.write(exp)
+                                else:
+                                    st.info("No experience information identified")
+                        
+                        with tab2:
+                            # Fetch job matches for this resume
+                            job_matches = get_job_matches_by_resume_id(resume_id)
+                            
+                            if not job_matches:
+                                st.info("No job matches found for this resume.")
+                            else:
+                                # Create selection for job matches
+                                job_options = {f"{match.job_title} - Match: {match.overall_match_score:.1f}%": match.id 
+                                             for match in job_matches if match.job_title}
+                                
+                                # Add options for matches without job titles
+                                for i, match in enumerate(job_matches):
+                                    if not match.job_title:
+                                        job_options[f"Job Match {i+1} - Match: {match.overall_match_score:.1f}%"] = match.id
+                                
+                                selected_job = st.selectbox(
+                                    "Select a job match to view:",
+                                    options=list(job_options.keys())
+                                )
+                                
+                                if selected_job:
+                                    job_id = job_options[selected_job]
+                                    
+                                    # Find the selected job match
+                                    selected_match = None
+                                    for match in job_matches:
+                                        if match.id == job_id:
+                                            selected_match = match
+                                            break
+                                    
+                                    if selected_match:
+                                        # Display match scores
+                                        st.markdown("##### Match Scores")
+                                        score_col1, score_col2, score_col3, score_col4 = st.columns(4)
+                                        
+                                        with score_col1:
+                                            st.metric("Overall", f"{selected_match.overall_match_score:.1f}%")
+                                        with score_col2:
+                                            st.metric("Skills", f"{selected_match.skills_match_score:.1f}%")
+                                        with score_col3:
+                                            st.metric("Experience", f"{selected_match.experience_match_score:.1f}%")
+                                        with score_col4:
+                                            st.metric("Education", f"{selected_match.education_match_score:.1f}%")
+                                        
+                                        # Display job description
+                                        with st.expander("Job Description", expanded=False):
+                                            st.write(selected_match.job_description)
+                                        
+                                        # Display matching and missing skills
+                                        st.markdown("##### Skill Analysis")
+                                        col1, col2 = st.columns(2)
+                                        
+                                        with col1:
+                                            st.subheader("Matching Skills")
+                                            matching_skills = selected_match.matching_skills or []
+                                            if matching_skills:
+                                                for skill in matching_skills:
+                                                    st.write(f"• {skill}")
+                                            else:
+                                                st.info("No matching skills found.")
+                                        
+                                        with col2:
+                                            st.subheader("Missing Skills")
+                                            missing_skills = selected_match.missing_skills or []
+                                            if missing_skills:
+                                                for skill in missing_skills:
+                                                    st.write(f"• {skill}")
+                                            else:
+                                                st.success("No missing skills!")
+                                        
+                                        # Display recommendations
+                                        st.markdown("##### Recommendations")
+                                        recommendations = selected_match.recommendations or []
+                                        if recommendations:
+                                            for rec in recommendations:
+                                                st.write(f"• {rec}")
+                                        else:
+                                            st.info("No specific recommendations.")
+                                        
+                                        # Display feedback summary
+                                        if selected_match.feedback_summary:
+                                            st.markdown("##### Feedback Summary")
+                                            st.write(selected_match.feedback_summary)
+        except Exception as e:
+            st.error(f"Error loading database information: {str(e)}")
+            st.error("Please make sure the database is properly configured.")
 
 # Step 1: Upload Resumes
 if st.session_state.step == 1:

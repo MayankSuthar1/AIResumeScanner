@@ -8,11 +8,25 @@ import json
 # Get database URL from environment variable
 DATABASE_URL = os.environ.get("DATABASE_URL")
 
-# Create SQLAlchemy engine
-engine = create_engine(DATABASE_URL)
+# Ensure we have a database URL
+if not DATABASE_URL:
+    print("Warning: DATABASE_URL environment variable not set. Database functionality will be disabled.")
+    DATABASE_URL = "sqlite:///:memory:"  # Fallback to in-memory SQLite for development
 
-# Create a base class for declarative models
-Base = declarative_base()
+try:
+    # Create SQLAlchemy engine with error handling
+    engine = create_engine(DATABASE_URL)
+    
+    # Create a base class for declarative models
+    Base = declarative_base()
+    
+    print("Database connection established successfully")
+except Exception as e:
+    print(f"Error connecting to database: {e}")
+    # Set up a dummy in-memory database as fallback
+    DATABASE_URL = "sqlite:///:memory:"
+    engine = create_engine(DATABASE_URL)
+    Base = declarative_base()
 
 # Define Resume model
 class Resume(Base):
@@ -179,14 +193,21 @@ def get_all_resumes():
     Get all resumes from the database
     
     Returns:
-        List of Resume objects
+        List of Resume objects or empty list if error
     """
-    db = SessionLocal()
     try:
-        resumes = db.query(Resume).all()
-        return resumes
-    finally:
-        db.close()
+        db = SessionLocal()
+        try:
+            resumes = db.query(Resume).all()
+            return resumes
+        except Exception as e:
+            print(f"Error fetching resumes from database: {e}")
+            return []
+        finally:
+            db.close()
+    except Exception as e:
+        print(f"Error creating database session: {e}")
+        return []
 
 def get_resume_by_id(resume_id):
     """
@@ -196,14 +217,21 @@ def get_resume_by_id(resume_id):
         resume_id: ID of the resume
         
     Returns:
-        Resume object
+        Resume object or None if error
     """
-    db = SessionLocal()
     try:
-        resume = db.query(Resume).filter(Resume.id == resume_id).first()
-        return resume
-    finally:
-        db.close()
+        db = SessionLocal()
+        try:
+            resume = db.query(Resume).filter(Resume.id == resume_id).first()
+            return resume
+        except Exception as e:
+            print(f"Error fetching resume by ID from database: {e}")
+            return None
+        finally:
+            db.close()
+    except Exception as e:
+        print(f"Error creating database session: {e}")
+        return None
 
 def get_job_matches_by_resume_id(resume_id):
     """
@@ -213,11 +241,18 @@ def get_job_matches_by_resume_id(resume_id):
         resume_id: ID of the resume
         
     Returns:
-        List of JobMatch objects
+        List of JobMatch objects or empty list if error
     """
-    db = SessionLocal()
     try:
-        matches = db.query(JobMatch).filter(JobMatch.resume_id == resume_id).all()
-        return matches
-    finally:
-        db.close()
+        db = SessionLocal()
+        try:
+            matches = db.query(JobMatch).filter(JobMatch.resume_id == resume_id).all()
+            return matches
+        except Exception as e:
+            print(f"Error fetching job matches from database: {e}")
+            return []
+        finally:
+            db.close()
+    except Exception as e:
+        print(f"Error creating database session: {e}")
+        return []
