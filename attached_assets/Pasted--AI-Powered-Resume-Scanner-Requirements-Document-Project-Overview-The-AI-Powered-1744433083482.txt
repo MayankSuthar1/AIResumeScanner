@@ -1,0 +1,125 @@
+# 📄 AI-Powered Resume Scanner – Requirements Document
+
+## 🧠 Project Overview
+
+The **AI-Powered Resume Scanner** is a web-based application designed to streamline the recruitment process by automatically parsing, analyzing, and ranking resumes based on their relevance to specific job descriptions. Leveraging Natural Language Processing (NLP) and Machine Learning (ML) techniques, the system aims to reduce manual effort, minimize bias, and enhance hiring efficiency.
+
+## 🎯 Objectives
+
+- **Automated Resume Parsing**: Extract structured information (e.g., skills, experience, education) from resumes in various formats.
+- **Job Description Analysis**: Interpret job requirements to identify key skills and qualifications.
+- **Relevance Scoring**: Compute a match score between each resume and the job description.
+- **Ranking Mechanism**: Order resumes based on their relevance scores.
+- **User Interface**: Provide an intuitive interface for users to upload resumes and input job descriptions.
+- **Feedback System**: Offer insights into missing skills or qualifications in each resume.
+
+## 📦 Functional Requirements
+
+### 1. Resume Upload
+
+- **Input**: Accept resumes in PDF, DOCX, and DOC formats.
+- **Validation**: Ensure file size and type compliance.
+
+### 2. Job Description Input
+
+- **Text Field**: Allow users to paste or type job descriptions.
+- **File Upload**: Optionally accept job descriptions as text files.
+
+### 3. Resume Parsing
+
+- **Text Extraction**: Utilize libraries like `pdfminer.six`, `python-docx`, or `textract` to extract text from resumes.
+- **Information Extraction**: Identify and extract key sections such as:
+  - Contact Information
+  - Work Experience
+  - Education
+  - Skills
+  - Certifications
+
+### 4. Job Description Analysis
+
+- **Keyword Extraction**: Identify essential skills and qualifications from the job description.
+- **Semantic Analysis**: Understand context using NLP models like BERT or GPT.
+
+### 5. Relevance Scoring
+
+- **Vectorization**: Convert resumes and job descriptions into vector representations.
+- **Similarity Computation**: Calculate cosine similarity scores to determine relevance.
+- **Scoring Algorithm**: Assign a match score (e.g., 0 to 100) to each resume.
+
+### 6. Resume Ranking
+
+- **Sorting Mechanism**: Order resumes from highest to lowest match score.
+- **Display**: Present ranked resumes in a user-friendly format.
+
+### 7. Feedback System
+
+- **Skill Gap Analysis**: Highlight missing skills or qualifications in each resume.
+- **Recommendations**: Suggest improvements or additional certifications.
+
+### 8. User Interface
+
+- **Dashboard**: Centralized platform for uploading resumes and job descriptions.
+- **Results Display**: Show ranked resumes with match scores and feedback.
+- **Responsive Design**: Ensure compatibility across devices.
+
+## 🛠️ Non-Functional Requirements
+
+- **Performance**: Process and rank up to 100 resumes within 2 minutes.
+- **Scalability**: Handle increased load without performance degradation.
+- **Security**: Implement secure file handling and data storage practices.
+- **Usability**: Design an intuitive interface for users with varying technical expertise.
+- **Maintainability**: Write modular and well-documented code for ease of updates.
+
+## 🧰 Technology Stack
+
+- **Frontend**:
+
+  - Framework: Streamlit
+  - Styling: CSS3, Bootstrap or Material-UI
+
+- **Backend**:
+
+  - Language: Python
+  - Framework: Django
+
+- **NLP & ML**:
+
+  - Libraries: spaCy, NLTK, scikit-learn
+  - Models: BERT, Sentence-BERT for embeddings
+
+- **File Handling**:
+
+  - Libraries: pdfminer.six, python-docx, textract
+
+- **Database**:
+
+  - PostgreSQL or MongoDB for storing parsed data and results
+
+- **Deployment**:
+
+  - Platforms: Heroku, AWS, or Streamlit Sharing
+
+## 🔄 Workflow Diagram
+
+```mermaid
+graph TD
+A[User Uploads Resume & Job Description] --> B[Extract Text from Files]
+B --> C[Parse and Extract Information]
+C --> D[Vectorize Text Data]
+D --> E[Compute Similarity Scores]
+E --> F[Rank Resumes Based on Scores]
+F --> G[Display Results and Feedback to User]
+```
+
+## 🧪 Testing & Validation
+
+- **Unit Testing**: Test individual modules like text extraction and similarity computation.
+- **Integration Testing**: Ensure seamless interaction between frontend and backend components.
+- **User Acceptance Testing**: Collect feedback from potential users to refine features.
+
+## 🚀 Future Enhancements
+
+- **Chatbot Integration**: Assist users in real-time with queries and suggestions.
+- **Multilingual Support**: Parse and analyze resumes in multiple languages.
+- **Analytics Dashboard**: Provide insights into common skill gaps and applicant trends.
+- **Integration with ATS**: Allow seamless integration with Applicant Tracking Systems.
