@@ -11,14 +11,14 @@ from pdf2image import convert_from_path, convert_from_bytes
 from datetime import datetime
 
 # Configure the Gemini API with your key
-# GOOGLE_API_KEY = os.environ.get("GOOGLE_API_KEY")
+GOOGLE_API_KEY = os.environ.get("GOOGLE_API_KEY")
 
-# if not GOOGLE_API_KEY:
-#     print("Warning: GOOGLE_API_KEY not set. AI features will not work.")
+if not GOOGLE_API_KEY:
+    print("Warning: GOOGLE_API_KEY not set. AI features will not work.")
 
 try:
     # Configure the Gemini API
-    genai.configure(api_key="AIzaSyD7jI5IvIvbdqhUFlFRLLqH6AFABxeAAR8")
+    genai.configure(api_key=GOOGLE_API_KEY)
     
     # Use the specific model provided by the user
     model_name = 'gemini-2.5-pro-exp-03-25'
