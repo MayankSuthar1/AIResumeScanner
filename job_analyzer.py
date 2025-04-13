@@ -2,7 +2,7 @@ import re
 import spacy
 from collections import Counter
 from ai_helper import analyze_job_description
-from database import save_job_match
+# from database import save_job_match
 
 # Load spaCy model
 try:

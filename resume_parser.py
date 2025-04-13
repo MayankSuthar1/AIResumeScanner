@@ -6,11 +6,20 @@ import subprocess
 from PyPDF2 import PdfReader
 import docx2txt
 import pytesseract
-from pdf2image import convert_from_path
+from pdf2image import convert_from_path, convert_from_bytes
 from PIL import Image
 import tempfile
 from ai_helper import extract_resume_info
-from database import save_resume
+# from database import save_resume
+from platform import system
+import fitz  # PyMuPDF
+
+if system() == 'Windows':
+    pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tesseract.exe'  # Update this path if needed
+elif system() == 'Darwin':
+    pytesseract.pytesseract.tesseract_cmd = '/usr/local/bin/tesseract'
+else:
+    pytesseract.pytesseract.tesseract_cmd = '/usr/local/bin/tesseract'  # Update this path for non-Windows systems
 
 # Load spaCy model
 try:
@@ -27,46 +36,130 @@ def check_if_pdf_is_scanned(pdf_path):
     """
     text = ""
     try:
-        with open(pdf_path, 'rb') as file:
-            reader = PdfReader(file)
-            for page in reader.pages:
-                page_text = page.extract_text() or ""
-                text += page_text
+        # Using PyMuPDF (fitz) for more accurate text detection
+        pdf_document = fitz.open(pdf_path)
+        
+        # Check text content and image content
+        text_lengths = []
+        image_counts = []
+        
+        for page_num in range(len(pdf_document)):
+            page = pdf_document[page_num]
+            page_text = page.get_text()
+            text_lengths.append(len(page_text.strip()))
+            
+            # Count images on the page
+            image_list = page.get_images(full=True)
+            image_counts.append(len(image_list))
+        
+        pdf_document.close()
+        
+        # If there are images and very little text, likely a scanned document
+        if sum(text_lengths) < 300 and sum(image_counts) > 0:
+            return True
+            
+        # If text is present but might be incomplete (common with resumes)
+        if 100 <= sum(text_lengths) < 1000:
+            # This is a gray area - might be partially machine readable
+            # Let's return True to apply OCR for better results
+            return True
+            
+        return False
     except Exception as e:
         print(f"Error checking PDF type: {e}")
-        return True  # Assume scanned if we can't check properly
-    
-    # If text length is very short compared to usual resume length, it's likely a scanned document
-    if len(text.strip()) < 100:
-        return True
-    
-    return False
+        try:
+            # Fall back to PyPDF2 if fitz fails
+            with open(pdf_path, 'rb') as file:
+                reader = PdfReader(file)
+                for page in reader.pages:
+                    page_text = page.extract_text() or ""
+                    text += page_text
+                    
+            # If text length is very short compared to usual resume length, it's likely a scanned document
+            if len(text.strip()) < 200:
+                return True
+                
+            return False
+        except:
+            return True  # Assume scanned if we can't check properly
 
-def ocr_pdf(pdf_path):
+def enhance_ocr_quality(image):
+    """
+    Enhance image quality for better OCR results
+    """
+    try:
+        # Convert to grayscale
+        gray_image = image.convert('L')
+        
+        # Increase contrast
+        from PIL import ImageEnhance
+        enhancer = ImageEnhance.Contrast(gray_image)
+        enhanced_image = enhancer.enhance(1.5)  # Increase contrast by 50%
+        
+        # Optionally apply thresholding for better text detection
+        # This converts the image to pure black and white
+        threshold = 200
+        enhanced_image = enhanced_image.point(lambda p: p > threshold and 255)
+        
+        return enhanced_image
+    except Exception as e:
+        print(f"Image enhancement failed: {e}")
+        return image  # Return original if enhancement fails
+
+def ocr_pdf(pdf_path, dpi=300):
     """
     Perform OCR on PDF that is identified as a scanned document
+    with improved image processing and quality
     """
     print("Performing OCR on scanned PDF document...")
     
     try:
         # Create a temporary directory to store the images
         with tempfile.TemporaryDirectory() as temp_dir:
-            # Convert PDF pages to images
-            images = convert_from_path(pdf_path)
+            # Convert PDF pages to images with higher DPI for better quality
+            images = convert_from_path(pdf_path, dpi=dpi)
             
             full_text = ""
             for i, image in enumerate(images):
+                # Enhance image quality
+                enhanced_image = enhance_ocr_quality(image)
+                
                 # Save each image temporarily
                 img_path = os.path.join(temp_dir, f'page_{i}.png')
-                image.save(img_path, 'PNG')
+                enhanced_image.save(img_path, 'PNG')
                 
-                # Perform OCR on the image
-                text = pytesseract.image_to_string(Image.open(img_path))
+                # Perform OCR on the image with improved configuration
+                text = pytesseract.image_to_string(
+                    Image.open(img_path), 
+                    lang='eng',  # English language
+                    config='--psm 6'  # Assume a single uniform block of text
+                )
+                
                 full_text += text + "\n\n"
             
             return full_text
     except Exception as e:
         print(f"OCR failed: {e}")
+        return ""
+
+def extract_text_from_pdf_with_pymupdf(pdf_path):
+    """
+    Extract text from PDF using PyMuPDF (fitz) which often has better extraction capabilities
+    """
+    try:
+        text = ""
+        pdf_document = fitz.open(pdf_path)
+        
+        for page_num in range(len(pdf_document)):
+            page = pdf_document[page_num]
+            # Extract text with the raw option which preserves more formatting
+            page_text = page.get_text("text")
+            text += page_text + "\n"
+            
+        pdf_document.close()
+        return text
+    except Exception as e:
+        print(f"PyMuPDF extraction failed: {e}")
         return ""
 
 def try_pdfminer_extraction(pdf_path):
@@ -88,36 +181,69 @@ def extract_text_from_file(file_path):
     file_ext = os.path.splitext(file_path)[1].lower()
     
     if file_ext == '.pdf':
-        # First check if it's a scanned PDF
-        if check_if_pdf_is_scanned(file_path):
-            # Try OCR if it's a scanned document
-            text = ocr_pdf(file_path)
-            if text and len(text.strip()) > 100:
-                return text
+        print(f"Processing PDF file: {file_path}")
+        
+        # Step 1: Try PyMuPDF extraction first (often best quality)
+        pymupdf_text = extract_text_from_pdf_with_pymupdf(file_path)
+        
+        # Step 2: Check if it's a scanned document that needs OCR
+        is_scanned = check_if_pdf_is_scanned(file_path)
+        
+        # If PyMuPDF got good text and it's not detected as scanned, use that
+        if pymupdf_text and len(pymupdf_text.strip()) > 500 and not is_scanned:
+            print("Successfully extracted text using PyMuPDF")
+            return pymupdf_text
+        
+        # Step 3: If scanned or insufficient text, try OCR with enhanced quality
+        if is_scanned or len(pymupdf_text.strip()) < 500:
+            print("PDF appears to be scanned or has limited machine-readable text. Using OCR...")
+            ocr_text = ocr_pdf(file_path, dpi=400)  # Higher DPI for better quality
+            
+            # If OCR produced good text
+            if ocr_text and len(ocr_text.strip()) > 300:
+                print("Successfully extracted text using enhanced OCR")
+                
+                # If we have both PyMuPDF text and OCR text, combine them intelligently
+                if pymupdf_text and len(pymupdf_text.strip()) > 100:
+                    # Use the longer text, but prioritize OCR for scanned documents
+                    if is_scanned or len(ocr_text) > len(pymupdf_text):
+                        print("Using OCR text (higher quality for this document)")
+                        return ocr_text
+                    else:
+                        print("Using PyMuPDF text (higher quality for this document)")
+                        return pymupdf_text
+                return ocr_text
+        
+        # Step 4: Try other PDF extraction methods as fallbacks
+        print("Trying alternative extraction methods...")
         
         # Try regular PDF extraction with PyPDF2
-        text = ""
+        pypdf2_text = ""
         try:
             with open(file_path, 'rb') as file:
                 reader = PdfReader(file)
                 for page in reader.pages:
-                    text += (page.extract_text() or "") + "\n"
+                    pypdf2_text += (page.extract_text() or "") + "\n"
+                    
+            if pypdf2_text and len(pypdf2_text.strip()) > len(pymupdf_text.strip()):
+                print("PyPDF2 extraction provided better results")
+                return pypdf2_text
         except Exception as e:
             print(f"PyPDF2 extraction failed: {e}")
         
-        # If PyPDF2 extraction produced little text, try pdfminer
-        if not text or len(text.strip()) < 100:
-            pdfminer_text = try_pdfminer_extraction(file_path)
-            if pdfminer_text and len(pdfminer_text.strip()) > len(text.strip()):
-                text = pdfminer_text
+        # Try pdfminer
+        pdfminer_text = try_pdfminer_extraction(file_path)
+        if pdfminer_text and len(pdfminer_text.strip()) > max(len(pymupdf_text.strip()), len(pypdf2_text.strip())):
+            print("PDFMiner extraction provided better results")
+            return pdfminer_text
         
-        # If still not enough text, try OCR even if not initially detected as scanned
-        if not text or len(text.strip()) < 100:
-            ocr_text = ocr_pdf(file_path)
-            if ocr_text and len(ocr_text.strip()) > len(text.strip()):
-                text = ocr_text
+        # Return the best text we have so far
+        for text in [ocr_pdf(file_path, dpi=600), pymupdf_text, pypdf2_text, pdfminer_text]:
+            if text and len(text.strip()) > 100:
+                return text
         
-        return text
+        # If all else failed
+        return "Failed to extract meaningful text from PDF file"
     
     elif file_ext == '.docx':
         try:
@@ -410,8 +536,8 @@ def parse_resume(file_path, filename):
         parsed_data = extract_resume_info(text)
         
         # Save to database
-        db_resume = save_resume(filename, text, parsed_data)
-        resume_id = db_resume.id if db_resume else None
+        # db_resume = save_resume(filename, text, parsed_data)
+        # resume_id = db_resume.id if db_resume else None
         
         # Return structured information
         return {
@@ -419,7 +545,7 @@ def parse_resume(file_path, filename):
             "status": "success",
             "raw_text": text,
             "parsed_data": parsed_data,
-            "resume_id": resume_id  # Include database ID for reference
+            # "resume_id": resume_id  # Include database ID for reference
         }
     except Exception as e:
         print(f"AI extraction failed: {e}, falling back to traditional parsing")
@@ -446,8 +572,8 @@ def parse_resume(file_path, filename):
         }
         
         # Save fallback data to database
-        db_resume = save_resume(filename, text, fallback_data)
-        resume_id = db_resume.id if db_resume else None
+        # db_resume = save_resume(filename, text, fallback_data)
+        # resume_id = db_resume.id if db_resume else None
         
         # Return structured information
         return {
@@ -455,5 +581,5 @@ def parse_resume(file_path, filename):
             "status": "success", 
             "raw_text": text,
             "parsed_data": fallback_data,
-            "resume_id": resume_id
+            # "resume_id": resume_id
         }

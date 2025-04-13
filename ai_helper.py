@@ -3,19 +3,25 @@ import google.generativeai as genai
 from typing import Dict, List, Any, Optional
 import json
 import re
+import tempfile
+import fitz  # PyMuPDF
+from PIL import Image
+import pytesseract
+from pdf2image import convert_from_path, convert_from_bytes
+from datetime import datetime
 
 # Configure the Gemini API with your key
-GOOGLE_API_KEY = os.environ.get("GOOGLE_API_KEY")
+# GOOGLE_API_KEY = os.environ.get("GOOGLE_API_KEY")
 
-if not GOOGLE_API_KEY:
-    print("Warning: GOOGLE_API_KEY not set. AI features will not work.")
+# if not GOOGLE_API_KEY:
+#     print("Warning: GOOGLE_API_KEY not set. AI features will not work.")
 
 try:
     # Configure the Gemini API
-    genai.configure(api_key=GOOGLE_API_KEY)
+    genai.configure(api_key="AIzaSyD7jI5IvIvbdqhUFlFRLLqH6AFABxeAAR8")
     
     # Use the specific model provided by the user
-    model_name = 'gemini-2.5-pro-preview-03-25'
+    model_name = 'gemini-2.5-pro-exp-03-25'
     model = None
     
     try:
@@ -26,7 +32,38 @@ try:
     except Exception as e:
         print(f"Error connecting to model {model_name}: {e}")
         # Try fallback models if the specified one doesn't work
-        fallback_models = ['gemini-pro', 'gemini-1.0-pro', 'gemini-1.5-pro']
+        fallback_models = [
+                            "gemini-2.5-pro-exp-03-25",
+                            "gemini-2.5-pro-preview-03-25",
+                            "gemini-2.0-flash-exp",
+                            "gemini-2.0-flash",
+                            "gemini-2.0-flash-001",
+                            "gemini-2.0-flash-exp-image-generation",
+                            "gemini-2.0-flash-lite-001",
+                            "gemini-2.0-flash-lite",
+                            "gemini-2.0-flash-lite-preview-02-05",
+                            "gemini-2.0-flash-lite-preview",
+                            "gemini-2.0-pro-exp",
+                            "gemini-2.0-pro-exp-02-05",
+                            "gemini-2.0-flash-thinking-exp-01-21",
+                            "gemini-2.0-flash-thinking-exp",
+                            "gemini-2.0-flash-thinking-exp-1219",
+                            "gemini-1.5-pro-latest",
+                            "gemini-1.5-pro-001",
+                            "gemini-1.5-pro-002",
+                            "gemini-1.5-pro",
+                            "gemini-1.5-flash-latest",
+                            "gemini-1.5-flash-001",
+                            "gemini-1.5-flash-001-tuning",
+                            "gemini-1.5-flash",
+                            "gemini-1.5-flash-002",
+                            "gemini-1.5-flash-8b",
+                            "gemini-1.5-flash-8b-001",
+                            "gemini-1.5-flash-8b-latest",
+                            "gemini-1.5-flash-8b-exp-0827",
+                            "gemini-1.5-flash-8b-exp-0924"
+                        ]
+        
         for fallback_model in fallback_models:
             try:
                 model = genai.GenerativeModel(fallback_model)
@@ -54,16 +91,172 @@ except Exception as e:
             raise Exception("Gemini AI configuration failed")
     model = DummyModel()
 
-def extract_resume_info(text: str) -> Dict[str, Any]:
+def extract_text_from_pdf(pdf_path_or_data, use_ocr=True):
     """
-    Extract structured information from resume text using Gemini AI
+    Extract text from PDF using both native text extraction and OCR when necessary
+    
+    Args:
+        pdf_path_or_data: Path to PDF file or PDF data as bytes
+        use_ocr: Whether to use OCR for text extraction (default: True)
+        
+    Returns:
+        Extracted text from the PDF
+    """
+    try:
+        # Check if input is a file path or bytes
+        is_bytes = isinstance(pdf_path_or_data, bytes)
+        
+        # Open the PDF using PyMuPDF (fitz)
+        if is_bytes:
+            pdf_document = fitz.open(stream=pdf_path_or_data, filetype="pdf")
+        else:
+            pdf_document = fitz.open(pdf_path_or_data)
+        
+        # First attempt: Extract text directly from PDF
+        text = ""
+        text_extraction_success = False
+        
+        for page_num in range(len(pdf_document)):
+            page = pdf_document[page_num]
+            page_text = page.get_text()
+            if page_text.strip():
+                text += page_text + "\n\n"
+                text_extraction_success = True
+        
+        # If native text extraction succeeded and OCR is not required
+        if text_extraction_success and not use_ocr:
+            pdf_document.close()
+            return text.strip()
+        
+        # Second attempt: Apply OCR if native extraction failed or OCR is explicitly requested
+        if use_ocr:
+            print("Using OCR to extract text from PDF...")
+            ocr_text = ""
+            
+            # Convert PDF to images
+            if is_bytes:
+                # Create a temporary file to save the PDF data
+                with tempfile.NamedTemporaryFile(delete=False, suffix='.pdf') as temp_pdf:
+                    temp_pdf.write(pdf_path_or_data)
+                    temp_path = temp_pdf.name
+                images = convert_from_path(temp_path)
+                os.unlink(temp_path)  # Remove the temporary file
+            else:
+                images = convert_from_path(pdf_path_or_data)
+            
+            # Apply OCR to each page with enhanced image quality
+            for i, img in enumerate(images):
+                # Enhance image quality for better OCR
+                from PIL import ImageEnhance
+                gray_img = img.convert('L')  # Convert to grayscale
+                enhancer = ImageEnhance.Contrast(gray_img)
+                enhanced_img = enhancer.enhance(1.5)  # Increase contrast by 50%
+                
+                # Use pytesseract with optimal settings for resume text
+                page_text = pytesseract.image_to_string(
+                    enhanced_img, 
+                    lang='eng',  # English language
+                    config='--psm 6'  # Assume a single uniform block of text
+                )
+                ocr_text += page_text + "\n\n"
+            
+            # Combine native text and OCR text if both are available,
+            # or use OCR text if native extraction failed
+            if text_extraction_success:
+                # Combine both texts, prioritizing the one with more content
+                if len(ocr_text) > len(text) * 1.2:  # OCR has 20% more content
+                    final_text = ocr_text
+                else:
+                    final_text = text
+            else:
+                final_text = ocr_text
+            
+            pdf_document.close()
+            return final_text.strip()
+        
+        pdf_document.close()
+        return text.strip()
+    
+    except Exception as e:
+        print(f"Error extracting text from PDF: {e}")
+        return ""
+
+def extract_resume_info_fallback(text: str) -> Dict[str, Any]:
+    """
+    Fallback function to extract resume information using rule-based parsing
+    when AI-based extraction fails
     
     Args:
         text: The full text of the resume
         
     Returns:
+        Dictionary with basic extracted information
+    """
+    print("Using fallback function for resume information extraction")
+    
+    # Initialize the structure for extracted information
+    resume_info = {
+        "contact_info": {
+            "name": None,
+            "email": None,
+            "phone": None,
+            "location": None
+        },
+        "education": [],
+        "experience": [],
+        "skills": {"technical": [], "soft": []},
+        "certifications": []
+    }
+    
+    # Extract email using regex
+    email_pattern = r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b'
+    emails = re.findall(email_pattern, text)
+    if emails:
+        resume_info["contact_info"]["email"] = emails[0]
+    
+    # Extract phone using regex
+    phone_pattern = r'(?:\+\d{1,3}[-\.\s]?)?\(?\d{3}\)?[-\.\s]?\d{3}[-\.\s]?\d{4}'
+    phones = re.findall(phone_pattern, text)
+    if phones:
+        resume_info["contact_info"]["phone"] = phones[0]
+    
+    # Extract skills (simplified approach)
+    common_tech_skills = ["python", "java", "javascript", "html", "css", "sql", 
+                         "aws", "docker", "kubernetes", "react", "angular", "node.js"]
+    common_soft_skills = ["leadership", "communication", "teamwork", "problem solving", 
+                         "time management", "critical thinking"]
+    
+    for skill in common_tech_skills:
+        if re.search(r'\b' + skill + r'\b', text.lower()):
+            resume_info["skills"]["technical"].append(skill)
+    
+    for skill in common_soft_skills:
+        if re.search(r'\b' + skill + r'\b', text.lower()):
+            resume_info["skills"]["soft"].append(skill)
+    
+    # Return the extracted information
+    return resume_info
+
+def extract_resume_info(text_or_pdf_path: str, is_pdf=False) -> Dict[str, Any]:
+    """
+    Extract structured information from resume text or PDF using Gemini AI
+    
+    Args:
+        text_or_pdf_path: Either the full text of the resume or path to PDF file
+        is_pdf: Whether the input is a PDF file path (default: False)
+        
+    Returns:
         Dictionary with extracted information
     """
+    # If input is a PDF file, extract text with enhanced PDF extraction
+    if is_pdf:
+        text = extract_text_from_pdf(text_or_pdf_path, use_ocr=True)
+        if not text:
+            print("Failed to extract text from PDF")
+            return {}
+    else:
+        text = text_or_pdf_path
+    
     prompt = f"""
     You are an expert AI assistant specialized in parsing and extracting information from resumes.
     Based on the resume text provided, extract the following information in JSON format:
@@ -79,7 +272,7 @@ def extract_resume_info(text: str) -> Dict[str, Any]:
         "contact_info": {{
             "name": "Full Name",
             "email": "email@example.com",
-            "phone": "phone number",
+            "phone": "123-456-7890",
             "location": "City, State"
         }},
         "education": [
@@ -133,6 +326,68 @@ def extract_resume_info(text: str) -> Dict[str, Any]:
         # Use a rules-based approach as fallback
         return extract_resume_info_fallback(text)
 
+def analyze_job_description_fallback(text: str) -> Dict[str, Any]:
+    """
+    Fallback function to analyze job description using rule-based parsing
+    when AI-based analysis fails
+    
+    Args:
+        text: The full text of the job description
+        
+    Returns:
+        Dictionary with basic extracted job requirements
+    """
+    print("Using fallback function for job description analysis")
+    
+    # Initialize the structure for extracted information
+    job_info = {
+        "skills": {
+            "technical": [],
+            "soft": []
+        },
+        "experience": [],
+        "education": [],
+        "responsibilities": [],
+        "preferred_qualifications": []
+    }
+    
+    # Extract skills (simplified approach)
+    common_tech_skills = ["python", "java", "javascript", "html", "css", "sql", 
+                         "aws", "docker", "kubernetes", "react", "angular", "node.js"]
+    common_soft_skills = ["leadership", "communication", "teamwork", "problem solving", 
+                         "time management", "critical thinking"]
+    
+    for skill in common_tech_skills:
+        if re.search(r'\b' + skill + r'\b', text.lower()):
+            job_info["skills"]["technical"].append(skill)
+    
+    for skill in common_soft_skills:
+        if re.search(r'\b' + skill + r'\b', text.lower()):
+            job_info["skills"]["soft"].append(skill)
+    
+    # Look for common education requirements
+    education_patterns = [
+        r'\b(?:bachelor|master|phd|doctorate|bs|ms|ba|ma|mba)\b.*?\b(?:degree|education)\b',
+        r'\bdegree\s+in\s+[^.]*'
+    ]
+    
+    for pattern in education_patterns:
+        matches = re.findall(pattern, text, re.IGNORECASE)
+        for match in matches:
+            job_info["education"].append({"degree": match.strip(), "field": None})
+    
+    # Look for experience requirements
+    experience_pattern = r'\b(\d+)[+]?\s+years?\s+(?:of\s+)?(?:experience|exp)\b'
+    experience_matches = re.findall(experience_pattern, text, re.IGNORECASE)
+    
+    if experience_matches:
+        job_info["experience"].append({
+            "years": experience_matches[0],
+            "domain": "General"
+        })
+    
+    return job_info
+
 def analyze_job_description(text: str) -> Dict[str, Any]:
     """
     Analyze job description using Gemini AI
@@ -161,8 +416,8 @@ def analyze_job_description(text: str) -> Dict[str, Any]:
         }},
         "experience": [
             {{
-                "years": "Number of years or range",
-                "domain": "Domain or field"
+                "years": "X",
+                "domain": "Domain Name"
             }}
         ],
         "education": [
@@ -175,7 +430,7 @@ def analyze_job_description(text: str) -> Dict[str, Any]:
         "preferred_qualifications": ["Qualification 1", "Qualification 2"]
     }}
     
-    Only respond with the JSON, nothing else. If you cannot find certain information, use null or empty arrays/objects as appropriate.
+    Only respond with the JSON, nothing else.
     
     Here is the job description:
     
@@ -197,747 +452,104 @@ def analyze_job_description(text: str) -> Dict[str, Any]:
             json_str = response_text.strip()
             
         # Parse the JSON string into a dictionary
-        parsed_info = json.loads(json_str)
-        return parsed_info
+        job_info = json.loads(json_str)
+        return job_info
     except Exception as e:
         print(f"Error analyzing job description with Gemini: {e}")
         # Use a rules-based approach as fallback
         return analyze_job_description_fallback(text)
 
-# Fallback functions for when AI is not available
-
-def extract_resume_info_fallback(text: str) -> Dict[str, Any]:
-    """
-    Extract structured information from resume text using rule-based approach
+def calculate_experience_match(resume_experience, job_experience):
+    """Helper function to calculate experience match score"""
+    # Simple implementation
+    if not job_experience:
+        return 0.8  # Default score if no experience requirements
     
-    Args:
-        text: The full text of the resume
+    # Check if candidate has any experience
+    if not resume_experience:
+        return 0.2  # Low score if no experience
         
-    Returns:
-        Dictionary with extracted information
-    """
-    print("Using fallback function for resume parsing")
-    
-    # Basic structure for result
-    result = {
-        "contact_info": {},
-        "education": [],
-        "experience": [],
-        "skills": {"technical": [], "soft": []},
-        "certifications": []
-    }
-    
-    # Extract email using regex
-    import re
-    email_pattern = r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}'
-    emails = re.findall(email_pattern, text)
-    if emails:
-        result["contact_info"]["email"] = emails[0]
-    
-    # Extract phone using regex - improved pattern to catch more formats
-    phone_pattern = r'(\+?1[-.\s]?)?(\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}|\d{10})'
-    phones = re.findall(phone_pattern, text)
-    if phones:
-        # Join the phone number parts and clean up
-        phone = ''.join(''.join(phone_parts) for phone_parts in phones[0] if phone_parts).strip()
-        phone = re.sub(r'[\s.-]', '', phone)  # Remove spaces, dots, and dashes
-        if phone:
-            result["contact_info"]["phone"] = phone
-    
-    # Extract name - look at the first few lines of text
-    lines = text.split('\n')
-    non_empty_lines = [line.strip() for line in lines if line.strip()]
-    
-    # Look for a name at the beginning of the resume
-    if non_empty_lines:
-        # Exclude lines with common non-name patterns
-        excludes = ['resume', 'cv', 'curriculum', 'vitae', '@', '.com', 'http', 'www']
-        for i in range(min(3, len(non_empty_lines))):
-            line = non_empty_lines[i]
-            if (
-                len(line.split()) <= 5 and            # Most names are short
-                not any(x in line.lower() for x in excludes) and
-                not re.search(r'\d{3}', line) and     # Names typically don't have 3 consecutive digits
-                not re.search(email_pattern, line)    # Not an email
-            ):
-                result["contact_info"]["name"] = line
+    # Basic matching - calculate based on years of experience
+    job_years_required = 0
+    for exp in job_experience:
+        if isinstance(exp, dict) and 'years' in exp:
+            try:
+                job_years_required = int(str(exp['years']).split('-')[0])
                 break
+            except (ValueError, TypeError):
+                job_years_required = 1  # Default if parsing fails
     
-    # Extract location/address
-    address_indicators = ['street', 'avenue', 'road', 'blvd', 'lane', 'drive', 'circle', 'apt', 'apartment', '#']
-    city_state_pattern = r'\b[A-Z][a-zA-Z\s]+,\s*[A-Z]{2}\s*\d{5}\b'  # City, ST ZIP
+    # Estimate candidate's total years of experience
+    candidate_years = 0
+    for exp in resume_experience:
+        if isinstance(exp, dict) and 'start_date' in exp:
+            try:
+                # Calculate duration between start and end dates
+                start_year = int(exp['start_date'].split('-')[0])
+                
+                if 'end_date' in exp and exp['end_date'] and exp['end_date'].lower() != 'present':
+                    end_year = int(exp['end_date'].split('-')[0])
+                else:
+                    end_year = datetime.now().year
+                
+                candidate_years += (end_year - start_year)
+            except (ValueError, IndexError):
+                candidate_years += 1  # Default if parsing fails
     
-    # First check for city, state pattern
-    location_match = re.search(city_state_pattern, text)
-    if location_match:
-        result["contact_info"]["location"] = location_match.group(0)
+    # Calculate match ratio
+    if job_years_required > 0:
+        experience_ratio = min(1.0, candidate_years / job_years_required)
     else:
-        # Look for address indicators in first few lines
-        for i in range(min(5, len(non_empty_lines))):
-            line = non_empty_lines[i].lower()
-            if any(ind in line for ind in address_indicators) and len(line.split()) <= 8:
-                result["contact_info"]["location"] = non_empty_lines[i]
-                break
+        experience_ratio = 0.7  # Default
     
-    # Enhanced technical skills list with more keywords
-    common_tech_skills = [
-        # Programming Languages
-        "python", "java", "javascript", "typescript", "c\\+\\+", "c#", "ruby", "php", "go", "rust", 
-        "swift", "kotlin", "r", "matlab", "perl", "scala", "bash", "powershell", "sql", "pl/sql",
-        
-        # Web Development
-        "html", "css", "sass", "less", "bootstrap", "tailwind", "jquery", "json", "xml", "rest", 
-        "soap", "graphql", "api", "webgl", "svg", "webpack", "babel", "gatsby", "next.js", "nuxt.js",
-        
-        # Frameworks & Libraries
-        "react", "angular", "vue", "svelte", "ember", "node", "express", "django", "flask", 
-        "spring", "asp.net", "laravel", "rails", "symfony", ".net", "flutter", "xamarin",
-        
-        # Databases
-        "sql", "mysql", "postgresql", "oracle", "mongodb", "sqlite", "redis", "cassandra", "dynamodb", 
-        "couchdb", "neo4j", "mariadb", "firebase", "elasticsearch", "nosql", "hbase", "supabase",
-        
-        # Cloud & DevOps
-        "aws", "azure", "gcp", "docker", "kubernetes", "jenkins", "terraform", "ansible", 
-        "chef", "puppet", "prometheus", "grafana", "git", "github", "gitlab", "bitbucket", 
-        "ci/cd", "devops", "cloudflare", "nginx", "apache", "systemd", "serverless",
-        
-        # AI/ML/Data Science
-        "machine learning", "deep learning", "artificial intelligence", "ai", "nlp", "computer vision",
-        "tensorflow", "pytorch", "keras", "scikit-learn", "pandas", "numpy", "matplotlib", "seaborn",
-        "data science", "data analysis", "data engineering", "data visualization", "big data", "spark",
-        
-        # Business Tools & Analytics
-        "tableau", "power bi", "excel", "spss", "sas", "looker", "domo", "qlik", "snowflake", "redshift",
-        
-        # Mobile Development
-        "android", "ios", "react native", "ionic", "swift", "objective-c", "kotlin", "flutter",
-        
-        # Network & Infrastructure
-        "networking", "tcp/ip", "dns", "dhcp", "vpn", "firewall", "load balancer", "linux", "unix", 
-        "windows", "macos", "active directory", "ldap", "oauth", "saml"
-    ]
-    
-    # Enhanced soft skills list
-    common_soft_skills = [
-        # Communication & Interpersonal
-        "communication", "teamwork", "collaboration", "interpersonal", "presentation", "public speaking",
-        "writing", "technical writing", "reporting", "negotiation", "conflict resolution", "persuasion",
-        
-        # Leadership & Management
-        "leadership", "management", "team management", "people management", "project management", 
-        "product management", "strategic planning", "decision making", "mentoring", "coaching", 
-        "delegation", "performance management", "team building", "stakeholder management",
-        
-        # Problem Solving & Thinking
-        "problem solving", "critical thinking", "analytical skills", "research", "troubleshooting",
-        "debugging", "root cause analysis", "systems thinking", "creative thinking", "innovation",
-        
-        # Work Habits & Attributes
-        "time management", "organization", "prioritization", "multitasking", "attention to detail",
-        "adaptability", "flexibility", "reliability", "dependability", "initiative", "self-motivated",
-        "proactive", "resourceful", "resilience", "stress management", "work ethic", "accountability",
-        
-        # Customer & Business Focus
-        "customer service", "user experience", "client relations", "relationship building", 
-        "business acumen", "market research", "budgeting", "cost analysis", "strategy"
-    ]
-    
-    # Function to handle skills extraction with different section headers
-    def extract_skills_from_section(section_name, text):
-        skills_found = []
-        section_patterns = [
-            rf'(?i){section_name}s?[:\s]*\n(.*?)(?=\n\n|\n[A-Z]|\Z)',  # "Skills:" or "SKILLS:" etc.
-            rf'(?i){section_name}s?[:\s]*\s(.*?)(?=\n\n|\n[A-Z]|\Z)'   # Inline skills section
-        ]
-        
-        for pattern in section_patterns:
-            section_match = re.search(pattern, text, re.DOTALL)
-            if section_match:
-                section_text = section_match.group(1)
-                # Split by common delimiters
-                for delimiter in [',', '•', '·', '-', '|', '\n', '/', '\\', ':', ';']:
-                    if delimiter in section_text:
-                        skill_items = [s.strip() for s in section_text.split(delimiter) if s.strip()]
-                        for skill in skill_items:
-                            # Clean up and add reasonable-length skills
-                            skill = re.sub(r'\s+', ' ', skill).strip()
-                            if 2 <= len(skill) <= 50:  # Reasonable skill name length
-                                skills_found.append(skill.lower())
-        
-        return skills_found
-    
-    # Extract skills from potential skills sections
-    skills_section_found = False
-    for section_name in ["skill", "proficienc", "technolog", "tool", "expert", "competenc"]:
-        section_skills = extract_skills_from_section(section_name, text)
-        if section_skills:
-            skills_section_found = True
-            for skill in section_skills:
-                # Try to categorize the skill
-                if any(tech.lower() in skill.lower() for tech in common_tech_skills):
-                    result["skills"]["technical"].append(skill)
-                elif any(soft.lower() in skill.lower() for soft in common_soft_skills):
-                    result["skills"]["soft"].append(skill)
-                else:
-                    # Default to technical if unclear
-                    result["skills"]["technical"].append(skill)
-    
-    # If no skills section found, fall back to keyword search
-    if not skills_section_found or len(result["skills"]["technical"]) + len(result["skills"]["soft"]) < 5:
-        # Check for tech skills
-        for skill in common_tech_skills:
-            if re.search(r'\b' + re.escape(skill) + r'\b', text.lower()):
-                result["skills"]["technical"].append(skill)
-        
-        # Check for soft skills
-        for skill in common_soft_skills:
-            if re.search(r'\b' + re.escape(skill) + r'\b', text.lower()):
-                result["skills"]["soft"].append(skill)
-    
-    # Enhanced education extraction
-    edu_keywords = [
-        "bachelor", "master", "phd", "doctorate", "bs", "ms", "ba", "ma", "mba", "b.tech", "m.tech",
-        "degree", "university", "college", "school", "institute", "gpa", "graduated", "diploma",
-        "certification", "certificate", "major", "minor"
-    ]
-    
-    # Look for education section
-    edu_section_match = re.search(r'(?i)education[:|\s]*\n(.*?)(?=\n\n|\n[A-Z]|\Z)', text, re.DOTALL)
-    if edu_section_match:
-        edu_section = edu_section_match.group(1)
-        # Split by double newlines to get each education entry
-        edu_entries = re.split(r'\n\s*\n', edu_section)
-        for entry in edu_entries:
-            if entry.strip():
-                # Create new education entry
-                edu_entry = {}
-                
-                # Try to extract degree
-                degree_pattern = r'(?i)(bachelor|master|phd|doctorate|mba|bs|ms|ba|ma|b\.tech|m\.tech)[\'\s]*(of|in|degree)?\s*([a-z\s,]+)'
-                degree_match = re.search(degree_pattern, entry)
-                if degree_match:
-                    degree_type = degree_match.group(1)
-                    field = degree_match.group(3).strip() if degree_match.group(3) else ""
-                    edu_entry["degree"] = f"{degree_type.title()} {field.title()}".strip()
-                
-                # Try to extract institution
-                uni_pattern = r'(?i)(university|college|institute|school) (?:of )?([a-z\s,]+)'
-                uni_match = re.search(uni_pattern, entry)
-                if uni_match:
-                    edu_entry["institution"] = uni_match.group(0).strip()
-                else:
-                    # Look for capitalized lines which might be institution names
-                    entry_lines = entry.split('\n')
-                    for line in entry_lines:
-                        if re.match(r'^[A-Z][a-zA-Z\s]+$', line.strip()) and len(line.strip().split()) <= 5:
-                            edu_entry["institution"] = line.strip()
-                            break
-                
-                # Try to extract graduation date
-                date_pattern = r'(?i)(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec|january|february|march|april|may|june|july|august|september|october|november|december)[,\s-]*\d{4}'
-                dates = re.findall(date_pattern, entry)
-                if dates:
-                    edu_entry["graduation_date"] = dates[-1]  # Use the last date found as graduation date
-                
-                # Try to extract GPA
-                gpa_pattern = r'(?i)gpa[:\s]*([0-9.]+)'
-                gpa_match = re.search(gpa_pattern, entry)
-                if gpa_match:
-                    edu_entry["gpa"] = gpa_match.group(1)
-                
-                # Add education entry if we found any information
-                if edu_entry:
-                    result["education"].append(edu_entry)
-    
-    # If no structured education section found, try to extract from full text
-    if not result["education"]:
-        # Look for degree patterns in the full text
-        degree_patterns = [
-            r'(?i)(bachelor|master|phd|doctorate)[\'s]*\s+(of|in)\s+([a-z\s,]+)',
-            r'(?i)(bs|ms|ba|ma|mba|b\.tech|m\.tech)\s+(in|of)?\s*([a-z\s,]+)',
-            r'(?i)([a-z\s]+) (university|college|institute|school)',
-        ]
-        
-        for pattern in degree_patterns:
-            matches = re.finditer(pattern, text)
-            for match in matches:
-                # Get some context around the match
-                start_pos = max(0, match.start() - 50)
-                end_pos = min(len(text), match.end() + 100)
-                context = text[start_pos:end_pos]
-                
-                edu_entry = {}
-                if match.lastindex >= 3:  # Full degree pattern with field
-                    degree_type = match.group(1)
-                    field = match.group(3) if match.group(3) else ""
-                    edu_entry["degree"] = f"{degree_type.title()} {field.title()}".strip()
-                else:  # Partial match
-                    edu_entry["degree"] = match.group(0).strip()
-                
-                # Look for institution in context
-                uni_pattern = r'(?i)([A-Z][a-zA-Z\s,]+) (university|college|institute|school)'
-                uni_match = re.search(uni_pattern, context)
-                if uni_match:
-                    edu_entry["institution"] = uni_match.group(0).strip()
-                
-                # Add if we have at least degree info
-                if "degree" in edu_entry:
-                    result["education"].append(edu_entry)
-    
-    # Extract work experience
-    experience_entries = []
-    
-    # Look for experience section
-    exp_section_match = re.search(r'(?i)(experience|employment|work history|professional background)[:|\s]*\n(.*?)(?=\n\n\n|\n[A-Z][a-z]+:\n|\Z)', text, re.DOTALL)
-    if exp_section_match:
-        exp_section = exp_section_match.group(2)
-        
-        # Split by patterns that likely indicate separate job entries
-        job_entries = re.split(r'\n\s*\n|\n(?=[A-Z][a-zA-Z\s]+\s*\|)', exp_section)
-        
-        for entry in job_entries:
-            if len(entry.strip()) > 20:  # Minimum meaningful content
-                exp_entry = {}
-                
-                # Try to extract company name (often at the beginning of entry or after title)
-                lines = entry.split('\n')
-                for i, line in enumerate(lines[:3]):  # Check first few lines
-                    if re.match(r'^[A-Z][a-zA-Z0-9\s&.,]+$', line.strip()) and len(line.strip().split()) <= 5:
-                        exp_entry["company"] = line.strip()
-                        break
-                
-                # Try to extract job title (often at beginning, has keywords like "engineer", "manager", etc.)
-                title_keywords = ["engineer", "developer", "manager", "director", "analyst", "specialist", 
-                                 "coordinator", "consultant", "assistant", "associate", "lead", "head", 
-                                 "architect", "designer", "administrator"]
-                
-                for i, line in enumerate(lines[:4]):  # Check first few lines
-                    if any(keyword.lower() in line.lower() for keyword in title_keywords):
-                        exp_entry["title"] = line.strip()
-                        break
-                
-                # Try to extract dates
-                date_pattern = r'(?i)(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec|january|february|march|april|may|june|july|august|september|october|november|december)[,\s-]*\d{4}'
-                dates = re.findall(date_pattern, entry)
-                
-                if len(dates) >= 2:  # Start and end dates
-                    exp_entry["start_date"] = dates[0]
-                    exp_entry["end_date"] = dates[-1]
-                elif len(dates) == 1:  # At least one date
-                    exp_entry["start_date"] = dates[0]
-                    if "present" in entry.lower() or "current" in entry.lower():
-                        exp_entry["end_date"] = "Present"
-                
-                # Try to extract description - rest of the text after title/company/dates
-                if "company" in exp_entry or "title" in exp_entry:
-                    # Find the line after title or company
-                    start_line = 0
-                    for i, line in enumerate(lines):
-                        if line.strip() == exp_entry.get("company", "") or line.strip() == exp_entry.get("title", ""):
-                            start_line = i + 1
-                            break
-                    
-                    description_lines = []
-                    for i in range(start_line, len(lines)):
-                        # Stop if we hit what looks like a new section
-                        if i > start_line and re.match(r'^[A-Z][a-zA-Z\s]+:$', lines[i]):
-                            break
-                        description_lines.append(lines[i])
-                    
-                    if description_lines:
-                        exp_entry["description"] = " ".join(line.strip() for line in description_lines)
-                
-                # Extract achievements - often bullet points
-                achievements = []
-                achievement_pattern = r'•\s*(.*?)(?=•|\n\n|\Z)'
-                achievement_matches = re.findall(achievement_pattern, entry)
-                if achievement_matches:
-                    for match in achievement_matches:
-                        if len(match.strip()) > 10:  # Minimum meaningful content
-                            achievements.append(match.strip())
-                
-                if achievements:
-                    exp_entry["achievements"] = achievements
-                
-                # Add to experience if we have at least basic info
-                if "company" in exp_entry or "title" in exp_entry:
-                    experience_entries.append(exp_entry)
-    
-    # If still no experience, try to extract from full text based on date patterns
-    if not experience_entries:
-        # Look for date ranges which often indicate job periods
-        date_range_pattern = r'((?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec|January|February|March|April|May|June|July|August|September|October|November|December)[\s,]+\d{4})\s*[-–—]\s*(Present|Current|Now|(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec|January|February|March|April|May|June|July|August|September|October|November|December)[\s,]+\d{4})'
-        
-        date_ranges = re.finditer(date_range_pattern, text, re.IGNORECASE)
-        for date_range in date_ranges:
-            # Get context around the date range
-            start_pos = max(0, date_range.start() - 100)
-            end_pos = min(len(text), date_range.end() + 200)
-            context = text[start_pos:end_pos]
-            
-            exp_entry = {
-                "start_date": date_range.group(1),
-                "end_date": date_range.group(2)
-            }
-            
-            # Look for job title and company in context
-            lines = context.split('\n')
-            for line in lines:
-                line = line.strip()
-                # Look for company name (capitalized, not too long)
-                if not "company" in exp_entry and re.match(r'^[A-Z][a-zA-Z0-9\s&.,]+$', line) and len(line.split()) <= 5:
-                    exp_entry["company"] = line
-                
-                # Look for job title
-                title_keywords = ["engineer", "developer", "manager", "director", "analyst", "specialist"]
-                if not "title" in exp_entry and any(keyword.lower() in line.lower() for keyword in title_keywords):
-                    exp_entry["title"] = line
-            
-            # Add a basic description from the context
-            exp_entry["description"] = re.sub(r'\s+', ' ', context).strip()
-            
-            # Add to experience entries
-            if "start_date" in exp_entry and "end_date" in exp_entry:
-                experience_entries.append(exp_entry)
-    
-    # Add experience entries to result
-    result["experience"] = experience_entries
-    
-    # Extract certifications
-    cert_keywords = ["certif", "license", "accredit", "diploma", "qualified", "certified"]
-    cert_section_match = None
-    
-    # Look for certifications section
-    for keyword in cert_keywords:
-        cert_section_match = re.search(rf'(?i){keyword}[a-z]*[:|\s]*\n(.*?)(?=\n\n\n|\n[A-Z][a-z]+:\n|\Z)', text, re.DOTALL)
-        if cert_section_match:
-            break
-    
-    if cert_section_match:
-        cert_section = cert_section_match.group(1)
-        # Split by newlines or bullets
-        cert_entries = re.split(r'\n|•|·|-|\*', cert_section)
-        for entry in cert_entries:
-            entry = entry.strip()
-            if entry and len(entry) > 5 and len(entry) < 100:
-                result["certifications"].append(entry)
-    
-    # Remove duplicates in lists
-    result["skills"]["technical"] = list(set(result["skills"]["technical"]))
-    result["skills"]["soft"] = list(set(result["skills"]["soft"]))
-    result["certifications"] = list(set(result["certifications"]))
-    
-    return result
+    return experience_ratio
 
-def analyze_job_description_fallback(text: str) -> Dict[str, Any]:
-    """
-    Analyze job description using rule-based approach
+def calculate_education_match(resume_education, job_education):
+    """Helper function to calculate education match score"""
+    # Simple implementation
+    if not job_education:
+        return 0.9  # High default score if no education requirements
     
-    Args:
-        text: The full text of the job description
-        
-    Returns:
-        Dictionary with extracted job requirements
-    """
-    print("Using fallback function for job description analysis")
+    if not resume_education:
+        return 0.3  # Low score if no education
     
-    # Basic structure for result
-    result = {
-        "skills": {"technical": [], "soft": []},
-        "experience": [],
-        "education": [],
-        "responsibilities": [],
-        "preferred_qualifications": []
-    }
+    # Very basic matching
+    # Assume match if candidate has any degree
+    return 0.7  # Default education match
+
+def generate_recommendations(skills_match, experience_match, education_match, 
+                           matching_skills, missing_skills, resume_info, job_info):
+    """Generate recommendations based on match analysis"""
+    recommendations = []
     
-    # Enhanced technical skills to look for - same as in resume parser
-    common_tech_skills = [
-        # Programming Languages
-        "python", "java", "javascript", "typescript", "c\\+\\+", "c#", "ruby", "php", "go", "rust", 
-        "swift", "kotlin", "r", "matlab", "perl", "scala", "bash", "powershell", "sql", "pl/sql",
-        
-        # Web Development
-        "html", "css", "sass", "less", "bootstrap", "tailwind", "jquery", "json", "xml", "rest", 
-        "soap", "graphql", "api", "webgl", "svg", "webpack", "babel", "gatsby", "next.js", "nuxt.js",
-        
-        # Frameworks & Libraries
-        "react", "angular", "vue", "svelte", "ember", "node", "express", "django", "flask", 
-        "spring", "asp.net", "laravel", "rails", "symfony", ".net", "flutter", "xamarin",
-        
-        # Databases
-        "sql", "mysql", "postgresql", "oracle", "mongodb", "sqlite", "redis", "cassandra", "dynamodb", 
-        "couchdb", "neo4j", "mariadb", "firebase", "elasticsearch", "nosql", "hbase", "supabase",
-        
-        # Cloud & DevOps
-        "aws", "azure", "gcp", "docker", "kubernetes", "jenkins", "terraform", "ansible", 
-        "chef", "puppet", "prometheus", "grafana", "git", "github", "gitlab", "bitbucket", 
-        "ci/cd", "devops", "cloudflare", "nginx", "apache", "systemd", "serverless",
-        
-        # AI/ML/Data Science
-        "machine learning", "deep learning", "artificial intelligence", "ai", "nlp", "computer vision",
-        "tensorflow", "pytorch", "keras", "scikit-learn", "pandas", "numpy", "matplotlib", "seaborn",
-        "data science", "data analysis", "data engineering", "data visualization", "big data", "spark",
-        
-        # Business Tools & Analytics
-        "tableau", "power bi", "excel", "spss", "sas", "looker", "domo", "qlik", "snowflake", "redshift",
-        
-        # Mobile Development
-        "android", "ios", "react native", "ionic", "swift", "objective-c", "kotlin", "flutter",
-        
-        # Network & Infrastructure
-        "networking", "tcp/ip", "dns", "dhcp", "vpn", "firewall", "load balancer", "linux", "unix", 
-        "windows", "macos", "active directory", "ldap", "oauth", "saml"
-    ]
+    # Skills recommendations
+    if skills_match < 0.7:
+        recommendations.append(f"Consider adding skills in: {', '.join(missing_skills[:3])}")
     
-    # Enhanced soft skills to look for - same as in resume parser
-    common_soft_skills = [
-        # Communication & Interpersonal
-        "communication", "teamwork", "collaboration", "interpersonal", "presentation", "public speaking",
-        "writing", "technical writing", "reporting", "negotiation", "conflict resolution", "persuasion",
-        
-        # Leadership & Management
-        "leadership", "management", "team management", "people management", "project management", 
-        "product management", "strategic planning", "decision making", "mentoring", "coaching", 
-        "delegation", "performance management", "team building", "stakeholder management",
-        
-        # Problem Solving & Thinking
-        "problem solving", "critical thinking", "analytical skills", "research", "troubleshooting",
-        "debugging", "root cause analysis", "systems thinking", "creative thinking", "innovation",
-        
-        # Work Habits & Attributes
-        "time management", "organization", "prioritization", "multitasking", "attention to detail",
-        "adaptability", "flexibility", "reliability", "dependability", "initiative", "self-motivated",
-        "proactive", "resourceful", "resilience", "stress management", "work ethic", "accountability",
-        
-        # Customer & Business Focus
-        "customer service", "user experience", "client relations", "relationship building", 
-        "business acumen", "market research", "budgeting", "cost analysis", "strategy"
-    ]
+    # Experience recommendations
+    if experience_match < 0.6:
+        recommendations.append("Highlight more relevant work experience for this role")
     
-    # Function to extract content from job description sections
-    def extract_section(section_names, text):
-        section_content = []
-        
-        # Create a pattern to match any of the section names
-        section_pattern = '|'.join(section_names)
-        pattern = rf'(?i)({section_pattern})[:|\s]*\n(.*?)(?=\n\n|\n[A-Z][a-z]+:|\Z)'
-        
-        section_match = re.search(pattern, text, re.DOTALL)
-        if section_match:
-            section_text = section_match.group(2).strip()
-            
-            # Look for bullet points
-            bullet_points = re.findall(r'(?:•|■|○|◦|▪|▫|⦿|-|★|\*|[0-9]+\.)\s*(.*?)(?=(?:•|■|○|◦|▪|▫|⦿|-|★|\*|[0-9]+\.)\s|\n\n|\Z)', section_text, re.DOTALL)
-            
-            if bullet_points:
-                for point in bullet_points:
-                    point = point.strip()
-                    if point and len(point) > 5:  # Minimum reasonable content
-                        section_content.append(point)
-            else:
-                # If no bullet points found, split by newlines
-                lines = section_text.split('\n')
-                for line in lines:
-                    line = line.strip()
-                    if line and len(line) > 5:
-                        section_content.append(line)
-        
-        return section_content
+    # Education recommendations
+    if education_match < 0.5:
+        recommendations.append("Consider additional education or certifications relevant to this role")
     
-    # Process skills sections
-    skill_section_names = ["skill", "qualification", "requirement", "what you'll need", "what we're looking for"]
-    skill_items = extract_section(skill_section_names, text)
+    # Default recommendation if none generated
+    if not recommendations:
+        recommendations.append("Your profile appears to be a good match for this role")
     
-    # Process preferred qualifications
-    preferred_section_names = ["preferred", "nice to have", "bonus", "plus", "desirable"]
-    preferred_items = extract_section(preferred_section_names, text)
-    result["preferred_qualifications"] = preferred_items
-    
-    # Process responsibilities
-    resp_section_names = ["responsibilit", "duties", "what you'll do", "job duties", "key responsibilit", "day to day", "job description"]
-    resp_items = extract_section(resp_section_names, text)
-    result["responsibilities"] = resp_items
-    
-    # Categorize skill items as technical or soft
-    for item in skill_items:
-        item_lower = item.lower()
-        
-        # Check if the item contains technical skills
-        tech_found = False
-        for skill in common_tech_skills:
-            if re.search(r'\b' + re.escape(skill) + r'\b', item_lower):
-                result["skills"]["technical"].append(skill)
-                tech_found = True
-        
-        # Check if the item contains soft skills
-        soft_found = False
-        for skill in common_soft_skills:
-            if re.search(r'\b' + re.escape(skill) + r'\b', item_lower):
-                result["skills"]["soft"].append(skill)
-                soft_found = True
-        
-        # For experience and education requirements in the skills section
-        if "year" in item_lower and any(x in item_lower for x in ["experience", "work", "industry"]):
-            years_match = re.search(r'(\d+)[+]?[\s-]*(year|yr)', item_lower)
-            if years_match:
-                years = years_match.group(1)
-                # Try to identify the domain
-                domain = "General"
-                domain_keywords = ["software", "web", "data", "cloud", "devops", "network", "security", "mobile", "frontend", "backend"]
-                for kw in domain_keywords:
-                    if kw in item_lower:
-                        domain = kw.capitalize()
-                        break
-                
-                result["experience"].append({
-                    "years": f"{years}+ years",
-                    "domain": domain
-                })
-        
-        if any(edu in item_lower for edu in ["degree", "bachelor", "master", "phd", "education"]):
-            # Try to extract degree and field
-            edu_entry = {}
-            
-            # Check for degree level
-            degree_levels = ["bachelor", "master", "phd", "doctorate", "mba", "bs", "ms", "ba", "ma"]
-            for level in degree_levels:
-                if level in item_lower:
-                    edu_entry["degree"] = level.capitalize()
-                    break
-            
-            # Check for field
-            edu_fields = ["computer science", "engineering", "business", "information technology", 
-                         "data science", "mathematics", "statistics", "economics", "finance"]
-            for field in edu_fields:
-                if field in item_lower:
-                    edu_entry["field"] = field.capitalize()
-                    break
-            
-            if "degree" in edu_entry or "field" in edu_entry:
-                result["education"].append(edu_entry)
-    
-    # If no skills were found through section analysis, do a full-text keyword search
-    if not result["skills"]["technical"] and not result["skills"]["soft"]:
-        # Check for tech skills
-        for skill in common_tech_skills:
-            if re.search(r'\b' + re.escape(skill) + r'\b', text.lower()):
-                result["skills"]["technical"].append(skill)
-        
-        # Check for soft skills
-        for skill in common_soft_skills:
-            if re.search(r'\b' + re.escape(skill) + r'\b', text.lower()):
-                result["skills"]["soft"].append(skill)
-    
-    # Look for experience requirements (years) if none found so far
-    if not result["experience"]:
-        exp_patterns = [
-            r'(\d+)[+]? years? (?:of )?experience',
-            r'experience:? (\d+)[+]? years?',
-            r'minimum (?:of )?(\d+)[+]? years?',
-            r'at least (\d+)[+]? years?',
-            r'(\d+)[+]? to (\d+)[+]? years?'
-        ]
-        
-        for pattern in exp_patterns:
-            matches = re.finditer(pattern, text.lower())
-            for match in matches:
-                years = match.group(1)
-                # Get some context to determine domain
-                start_pos = max(0, match.start() - 50)
-                end_pos = min(len(text), match.end() + 50)
-                context = text[start_pos:end_pos].lower()
-                
-                # Check common domains
-                domain = "General"
-                domain_keywords = {
-                    "software development": ["software", "develop", "coding", "programming"],
-                    "Web Development": ["web", "frontend", "backend", "fullstack", "full-stack"],
-                    "Data Science": ["data", "analytics", "machine learning", "ai", "statistics"],
-                    "DevOps": ["devops", "cloud", "infrastructure", "ci/cd", "deployment"],
-                    "Management": ["manage", "lead", "direct", "supervise"],
-                    "Design": ["design", "ui", "ux", "user interface", "user experience"]
-                }
-                
-                for domain_name, keywords in domain_keywords.items():
-                    if any(kw in context for kw in keywords):
-                        domain = domain_name
-                        break
-                
-                result["experience"].append({
-                    "years": f"{years}+ years",
-                    "domain": domain
-                })
-    
-    # Look for education requirements if none found so far
-    if not result["education"]:
-        # Look for education section
-        edu_section_names = ["education", "qualification", "academic"]
-        edu_section = None
-        
-        for section_name in edu_section_names:
-            pattern = rf'(?i){section_name}[:|\s]*\n(.*?)(?=\n\n|\n[A-Z][a-z]+:|\Z)'
-            section_match = re.search(pattern, text, re.DOTALL)
-            if section_match:
-                edu_section = section_match.group(1).strip()
-                break
-        
-        if edu_section:
-            # Look for degree information
-            degree_patterns = [
-                r'(?i)(bachelor|master|phd|doctorate)[\'s]*\s+(of|in)\s+([a-z\s,]+)',
-                r'(?i)(bs|ms|ba|ma|mba|b\.tech|m\.tech)\s+(in|of)?\s*([a-z\s,]+)',
-                r'(?i)degree\s+in\s+([a-z\s,]+)'
-            ]
-            
-            for pattern in degree_patterns:
-                matches = re.finditer(pattern, edu_section)
-                for match in matches:
-                    edu_entry = {}
-                    
-                    if match.lastindex >= 1:  # Matches degree type
-                        edu_entry["degree"] = match.group(1).capitalize()
-                    
-                    if match.lastindex >= 3:  # Matches field
-                        edu_entry["field"] = match.group(3).capitalize()
-                    elif match.lastindex == 1:  # Only matched field
-                        edu_entry["field"] = match.group(1).capitalize()
-                        edu_entry["degree"] = "Degree"
-                    
-                    if edu_entry:
-                        result["education"].append(edu_entry)
-        else:
-            # Look for degree requirements in full text
-            degree_keywords = ["bachelor", "master", "phd", "doctorate", "bs", "ms", "ba", "ma", "degree"]
-            edu_fields = ["computer science", "engineering", "business", "information technology", 
-                         "data science", "mathematics", "statistics", "economics", "finance"]
-            
-            for keyword in degree_keywords:
-                if keyword in text.lower():
-                    # Try to find associated field
-                    field_found = False
-                    for field in edu_fields:
-                        if field in text.lower():
-                            result["education"].append({
-                                "degree": keyword.capitalize(),
-                                "field": field.capitalize()
-                            })
-                            field_found = True
-                            break
-                    
-                    if not field_found:
-                        result["education"].append({
-                            "degree": keyword.capitalize(),
-                            "field": "Not specified"
-                        })
-    
-    # Remove duplicates in lists
-    result["skills"]["technical"] = list(set(result["skills"]["technical"]))
-    result["skills"]["soft"] = list(set(result["skills"]["soft"]))
-    result["responsibilities"] = list(dict.fromkeys(result["responsibilities"]))  # Preserve order
-    result["preferred_qualifications"] = list(dict.fromkeys(result["preferred_qualifications"]))
-    
-    return result
+    return recommendations
+
+def generate_feedback_summary(skills_match, experience_match, education_match, overall_match):
+    """Generate overall feedback summary"""
+    if overall_match >= 80:
+        return "Strong match! Your profile aligns well with this job's requirements."
+    elif overall_match >= 60:
+        return "Good match. You meet many of the job requirements but could improve in some areas."
+    elif overall_match >= 40:
+        return "Moderate match. You have some relevant qualifications but may need additional skills or experience."
+    else:
+        return "Limited match. Consider developing more skills or experience for this type of role."
 
 def calculate_match_score_fallback(resume_info: Dict[str, Any], job_info: Dict[str, Any]) -> Dict[str, Any]:
     """
@@ -954,403 +566,75 @@ def calculate_match_score_fallback(resume_info: Dict[str, Any], job_info: Dict[s
     
     # Initialize scores
     skills_match = 0
-    experience_match = 0
-    education_match = 0
     
+    # Skills matching
     # Extract lists of skills
     resume_tech_skills = set([skill.lower() for skill in resume_info.get("skills", {}).get("technical", [])])
     resume_soft_skills = set([skill.lower() for skill in resume_info.get("skills", {}).get("soft", [])])
     job_tech_skills = set([skill.lower() for skill in job_info.get("skills", {}).get("technical", [])])
     job_soft_skills = set([skill.lower() for skill in job_info.get("skills", {}).get("soft", [])])
     
-    # Extract all text from resume for fuzzy matching
-    resume_full_text = ""
+    # Use the enhanced matching function with synonym support
+    from relevance_scorer import extract_matching_items
+    skill_match_result = extract_matching_items(
+        list(resume_tech_skills) + list(resume_soft_skills),
+        list(job_tech_skills) + list(job_soft_skills),
+        matcher_type="skills"
+    )
     
-    # Add experience descriptions and all text available
-    for exp in resume_info.get("experience", []):
-        if isinstance(exp, dict):
-            # Add all text from experience entries
-            for key, value in exp.items():
-                if isinstance(value, str):
-                    resume_full_text += value + " "
-                elif isinstance(value, list):
-                    resume_full_text += " ".join(value) + " "
-        elif isinstance(exp, str):
-            resume_full_text += exp + " "
+    matching_skills = skill_match_result["matching_items"]
+    missing_skills = skill_match_result["missing_items"]
     
-    # Add education descriptions
-    for edu in resume_info.get("education", []):
-        if isinstance(edu, dict):
-            # Add all text from education entries
-            for key, value in edu.items():
-                if isinstance(value, str):
-                    resume_full_text += value + " "
-        elif isinstance(edu, str):
-            resume_full_text += edu + " "
-    
-    # Add certifications and other sections
-    for cert in resume_info.get("certifications", []):
-        if isinstance(cert, str):
-            resume_full_text += cert + " "
-    
-    # Convert to lowercase for easier matching
-    resume_full_text = resume_full_text.lower()
-    
-    # First perform exact skill matching
-    matching_tech_skills = resume_tech_skills.intersection(job_tech_skills)
-    matching_soft_skills = resume_soft_skills.intersection(job_soft_skills)
-    
-    # Then try fuzzy matching for skills not found through exact matches
-    potentially_matching_tech = set()
-    potentially_matching_soft = set()
-    
-    # Common skill variations for fuzzy matching
-    skill_variations = {
-        "javascript": ["js", "java script", "javascript"],
-        "typescript": ["ts", "type script", "typescript"],
-        "python": ["py", "python3", "python 3"],
-        "react": ["reactjs", "react.js", "react js"],
-        "angular": ["angularjs", "angular.js", "angular js"],
-        "node": ["nodejs", "node.js", "node js"],
-        "express": ["expressjs", "express.js", "express js"],
-        "mongodb": ["mongo", "mongo db"],
-        "postgresql": ["postgres", "pgsql", "psql"],
-        "mysql": ["sql", "maria", "mariadb"],
-        "machine learning": ["ml", "machine-learning"],
-        "artificial intelligence": ["ai", "artificial-intelligence"],
-        "amazon web services": ["aws"],
-        "microsoft azure": ["azure"],
-        "google cloud platform": ["gcp", "google cloud"],
-        "continuous integration": ["ci", "ci/cd"],
-        "continuous deployment": ["cd", "ci/cd"],
-        "devops": ["dev ops", "development operations"],
-        "frontend": ["front-end", "front end"],
-        "backend": ["back-end", "back end"]
-    }
-    
-    # Check remaining job skills for potential matches in resume text
-    for job_skill in job_tech_skills:
-        # Skip skills we already found exact matches for
-        if job_skill in matching_tech_skills:
-            continue
-            
-        # Check for variations
-        variation_found = False
-        if job_skill in skill_variations:
-            for variation in skill_variations[job_skill]:
-                if variation in resume_full_text or re.search(r'\b' + re.escape(variation) + r'\b', resume_full_text):
-                    potentially_matching_tech.add(job_skill)
-                    variation_found = True
-                    break
-        
-        # If no variation match, try word-by-word matching for multi-word skills
-        if not variation_found and ' ' in job_skill:
-            words = job_skill.split()
-            matches = 0
-            for word in words:
-                if len(word) > 3 and re.search(r'\b' + re.escape(word) + r'\b', resume_full_text):
-                    matches += 1
-            
-            # If at least 75% of words match, consider it a potential match
-            if matches / len(words) >= 0.75:
-                potentially_matching_tech.add(job_skill)
-    
-    # Similar approach for soft skills with synonyms
-    soft_skill_synonyms = {
-        "communication": ["communicate", "articulate", "present", "convey", "correspond"],
-        "teamwork": ["collaborate", "team player", "cooperation", "collaborative"],
-        "leadership": ["lead", "manage", "direct", "guide", "mentor", "supervise"],
-        "problem solving": ["troubleshoot", "resolve", "analytical", "solution", "debug"],
-        "critical thinking": ["analyze", "evaluate", "assess", "decision", "judgment"],
-        "time management": ["organize", "prioritize", "schedule", "deadline", "timely"],
-        "adaptability": ["flexible", "adjust", "versatile", "agile", "receptive"],
-        "creativity": ["innovative", "creative", "design", "original", "inventive"],
-        "attention to detail": ["meticulous", "thorough", "precise", "accurate", "detail-oriented"]
-    }
-    
-    for job_skill in job_soft_skills:
-        if job_skill in matching_soft_skills:
-            continue
-            
-        if job_skill in soft_skill_synonyms:
-            for synonym in soft_skill_synonyms[job_skill]:
-                if re.search(r'\b' + re.escape(synonym) + r'\b', resume_full_text):
-                    potentially_matching_soft.add(job_skill)
-                    break
-    
-    # Create final matching skills lists including both exact and fuzzy matches
-    all_matching_tech = list(matching_tech_skills) + list(potentially_matching_tech)
-    all_matching_soft = list(matching_soft_skills) + list(potentially_matching_soft)
-    
-    # Calculate skill match percentage with weighted scores
-    # Exact matches count fully, potential matches count as 0.5
-    if job_tech_skills or job_soft_skills:  # Avoid division by zero
-        total_job_skills = len(job_tech_skills) + len(job_soft_skills)
-        weighted_matches = len(matching_tech_skills) + len(matching_soft_skills) + (0.5 * len(potentially_matching_tech)) + (0.5 * len(potentially_matching_soft))
-        skills_match = min(100, round((weighted_matches / total_job_skills) * 100)) if total_job_skills > 0 else 50
+    # Calculate skill match percentage
+    total_job_skills = len(job_tech_skills) + len(job_soft_skills)
+    if total_job_skills > 0:
+        skills_match = min(1.0, len(matching_skills) / total_job_skills)
     else:
-        skills_match = 50  # Default if no skills are specified in job
+        skills_match = 0.7  # Default if no skills specified
     
-    # Missing skills are those not found in exact or fuzzy matching
-    missing_tech_skills = job_tech_skills - set(all_matching_tech)
-    missing_soft_skills = job_soft_skills - set(all_matching_soft)
+    # Experience match (improved)
+    experience_match, matching_experience, missing_experience = calculate_enhanced_experience_match(
+        resume_info.get("experience", []), 
+        job_info.get("experience", [])
+    )
     
-    # Prepare skills feedback
-    matching_skills = all_matching_tech + all_matching_soft
-    missing_skills = list(missing_tech_skills) + list(missing_soft_skills)
-    
-    # Enhanced experience match calculation
-    if job_info.get("experience"):
-        # Get the minimum years of experience required
-        min_years_required = 0
-        required_domain = "General"
-        
-        for exp in job_info.get("experience", []):
-            years_text = exp.get("years", "")
-            years_match = re.search(r'(\d+)', years_text)
-            if years_match:
-                years = int(years_match.group(1))
-                if years > min_years_required:
-                    min_years_required = years
-                    required_domain = exp.get("domain", "General")
-        
-        # Extract years from resume with multiple methods
-        resume_years = 0
-        
-        # Method 1: Look for explicit start/end dates
-        for exp in resume_info.get("experience", []):
-            if isinstance(exp, dict):
-                if "start_date" in exp and "end_date" in exp:
-                    start_year_match = re.search(r'(\d{4})', exp.get("start_date", ""))
-                    end_year_match = re.search(r'(\d{4})', exp.get("end_date", ""))
-                    
-                    if start_year_match:
-                        start_year = int(start_year_match.group(1))
-                        end_year = 2023  # Default current year
-                        
-                        if "present" in exp.get("end_date", "").lower():
-                            end_year = 2023  # Current year for "present"
-                        elif end_year_match:
-                            end_year = int(end_year_match.group(1))
-                        
-                        years = end_year - start_year
-                        if years > 0:  # Valid year range
-                            resume_years += years
-        
-        # Method 2: Look for years mentioned in experience descriptions
-        if resume_years == 0:
-            for exp in resume_info.get("experience", []):
-                if isinstance(exp, dict) and "description" in exp:
-                    years_match = re.search(r'(\d+)[+]?\s+years?', exp["description"].lower())
-                    if years_match:
-                        years = int(years_match.group(1))
-                        resume_years = max(resume_years, years)
-                elif isinstance(exp, str):
-                    years_match = re.search(r'(\d+)[+]?\s+years?', exp.lower())
-                    if years_match:
-                        years = int(years_match.group(1))
-                        resume_years = max(resume_years, years)
-        
-        # Method 3: Estimate from number of positions if still zero
-        if resume_years == 0 and resume_info.get("experience"):
-            resume_years = min(len(resume_info.get("experience")) * 2, 10)  # Assume 2 years per position, cap at 10
-        
-        # Calculate match score
-        if min_years_required > 0:
-            experience_match = min(100, round((resume_years / min_years_required) * 100))
-        else:
-            experience_match = 70  # Default if years not specified
-    else:
-        experience_match = 70  # Default if no experience requirements
-        min_years_required = 0
-        resume_years = 0
-        required_domain = "General"
-    
-    # Enhanced education match with better degree level comparison
-    if job_info.get("education"):
-        # Education level hierarchy
-        education_levels = {
-            "high school": 1,
-            "associate": 2, 
-            "associate's": 2,
-            "bachelor": 3, 
-            "bachelor's": 3,
-            "bs": 3, 
-            "ba": 3, 
-            "b.s.": 3,
-            "b.a.": 3,
-            "undergraduate": 3,
-            "master": 4, 
-            "master's": 4,
-            "ms": 4, 
-            "ma": 4,
-            "m.s.": 4,
-            "m.a.": 4,
-            "graduate": 4,
-            "mba": 4,
-            "phd": 5, 
-            "doctorate": 5,
-            "doctoral": 5
-        }
-        
-        # Find highest education level in resume
-        resume_edu_level = 0
-        resume_edu_field = ""
-        
-        for edu in resume_info.get("education", []):
-            if isinstance(edu, dict) and "degree" in edu:
-                degree_text = edu["degree"].lower()
-                # Check for level
-                for level_name, level_value in education_levels.items():
-                    if level_name in degree_text and level_value > resume_edu_level:
-                        resume_edu_level = level_value
-                        resume_edu_field = edu.get("field", "")
-            elif isinstance(edu, str):
-                # Check text for education keywords
-                for level_name, level_value in education_levels.items():
-                    if level_name in edu.lower() and level_value > resume_edu_level:
-                        resume_edu_level = level_value
-                        # Try to extract field
-                        field_match = re.search(r'(?:in|of)\s+([A-Za-z\s]+)', edu)
-                        if field_match:
-                            resume_edu_field = field_match.group(1).strip()
-        
-        # Find required education level in job
-        job_edu_level = 0
-        job_edu_field = ""
-        
-        for edu in job_info.get("education", []):
-            if isinstance(edu, dict) and "degree" in edu:
-                degree_text = edu["degree"].lower()
-                # Check for level
-                for level_name, level_value in education_levels.items():
-                    if level_name in degree_text and level_value > job_edu_level:
-                        job_edu_level = level_value
-                        job_edu_field = edu.get("field", "")
-            elif isinstance(edu, str):
-                # Check text for education keywords
-                for level_name, level_value in education_levels.items():
-                    if level_name in edu.lower() and level_value > job_edu_level:
-                        job_edu_level = level_value
-                        # Try to extract field
-                        field_match = re.search(r'(?:in|of)\s+([A-Za-z\s]+)', edu)
-                        if field_match:
-                            job_edu_field = field_match.group(1).strip()
-        
-        # Calculate education match with field relevance
-        if job_edu_level > 0:
-            # Level match (80% of score)
-            level_match = min(100, round((resume_edu_level / job_edu_level) * 100))
-            
-            # Field match (20% of score)
-            field_match = 0
-            if job_edu_field and resume_edu_field:
-                # Direct field match
-                if resume_edu_field.lower() == job_edu_field.lower():
-                    field_match = 100
-                else:
-                    # Related fields
-                    related_fields = {
-                        "computer science": ["information technology", "software engineering", "computer engineering"],
-                        "information technology": ["computer science", "information systems", "cybersecurity"],
-                        "business": ["management", "marketing", "finance", "accounting", "economics"],
-                        "engineering": ["mechanical engineering", "electrical engineering", "civil engineering"]
-                    }
-                    
-                    for key, related in related_fields.items():
-                        if job_edu_field.lower() == key and resume_edu_field.lower() in related:
-                            field_match = 75
-                            break
-                        # Also check reverse relationship
-                        if resume_edu_field.lower() == key and job_edu_field.lower() in related:
-                            field_match = 75
-                            break
-            else:
-                field_match = 50  # No specific field required or provided
-            
-            # Combined score
-            education_match = (level_match * 0.8) + (field_match * 0.2)
-        else:
-            education_match = 70  # Default if no specific level required
-    else:
-        education_match = 70  # Default if no education requirements
-        job_edu_level = 0
-        resume_edu_level = 0
+    # Education match (improved)
+    education_match, matching_education, missing_education = calculate_enhanced_education_match(
+        resume_info.get("education", []), 
+        job_info.get("education", [])
+    )
     
     # Calculate overall match with weighted components
-    # Adjust weights based on job level
-    skill_weight = 0.5
-    exp_weight = 0.3
-    edu_weight = 0.2
+    overall_match = (skills_match * 0.5) + (experience_match * 0.3) + (education_match * 0.2)
+    overall_match = round(overall_match * 100)  # Convert to percentage
     
-    # For senior positions, experience matters more
-    if min_years_required >= 5:
-        skill_weight = 0.45
-        exp_weight = 0.35
-        edu_weight = 0.2
+    # Generate recommendations
+    recommendations = generate_recommendations(
+        skills_match, experience_match, education_match,
+        matching_skills, missing_skills,
+        resume_info, job_info
+    )
     
-    # For academic or specialized positions, education matters more
-    if job_edu_level >= 4:  # Masters or PhD
-        skill_weight = 0.4
-        exp_weight = 0.25
-        edu_weight = 0.35
+    # Generate feedback summary
+    feedback_summary = generate_feedback_summary(
+        skills_match, experience_match, education_match, overall_match
+    )
     
-    overall_match = round((skills_match * skill_weight) + (experience_match * exp_weight) + (education_match * edu_weight))
-    
-    # Generate better recommendations
-    recommendations = []
-    
-    # Skills recommendations
-    if missing_skills:
-        if len(missing_tech_skills) > 3:
-            recommendations.append(f"Consider gaining experience with these technical skills: {', '.join(list(missing_tech_skills)[:3])}")
-        elif missing_tech_skills:
-            recommendations.append(f"Add these technical skills to your resume: {', '.join(list(missing_tech_skills))}")
-            
-        if missing_soft_skills:
-            recommendations.append(f"Highlight these soft skills: {', '.join(list(missing_soft_skills)[:3])}")
-    
-    # Experience recommendations
-    if experience_match < 70:
-        if resume_years < min_years_required:
-            recommendations.append(f"The job requires {min_years_required}+ years of experience in {required_domain}. Your resume shows approximately {resume_years} years.")
-        else:
-            recommendations.append(f"Make your {resume_years} years of experience in {required_domain} more prominent on your resume.")
-    
-    # Education recommendations
-    if education_match < 70 and job_edu_level > 0:
-        edu_level_names = {1: "High School", 2: "Associate's", 3: "Bachelor's", 4: "Master's", 5: "PhD"}
-        
-        if job_edu_level > resume_edu_level:
-            if job_edu_level in edu_level_names:
-                if job_edu_field:
-                    recommendations.append(f"This position typically requires a {edu_level_names[job_edu_level]} in {job_edu_field}.")
-                else:
-                    recommendations.append(f"This position typically requires a {edu_level_names[job_edu_level]} degree.")
-        else:
-            recommendations.append("Make your educational qualifications more prominent on your resume.")
-    
-    # Generate better feedback summary
-    if overall_match >= 85:
-        feedback_summary = "Excellent match! Your resume aligns very well with this job posting."
-    elif overall_match >= 70:
-        feedback_summary = "Strong match! Your resume aligns well with this position, with a few areas for improvement."
-    elif overall_match >= 55:
-        feedback_summary = "Good match with some areas for improvement. Consider updating your resume to better highlight relevant skills and experience."
-    elif overall_match >= 40:
-        feedback_summary = "Moderate match. This job requires additional skills or experience not evident in your resume."
-    else:
-        feedback_summary = "Limited match. Consider roles that better align with your current qualifications or gaining additional experience in this field."
-    
-    # Return improved match analysis with standardized field names matching the database schema
+    # Return structured match analysis
     return {
-        "skills_match_score": skills_match,
-        "experience_match_score": experience_match,
-        "education_match_score": education_match,
-        "overall_match_score": overall_match,
+        "scores": {
+            "skills_match": round(skills_match * 100),
+            "experience_match": round(experience_match * 100),
+            "education_match": round(education_match * 100),
+            "overall_match": overall_match
+        },
         "matching_skills": matching_skills,
         "missing_skills": missing_skills,
-        "recommendations": recommendations if recommendations else ["Ensure your resume clearly highlights all relevant experience"],
+        "matching_experience": matching_experience,
+        "missing_experience": missing_experience,
+        "matching_education": matching_education,
+        "missing_education": missing_education,
+        "recommendations": recommendations,
         "feedback_summary": feedback_summary
     }
 
@@ -1365,33 +649,25 @@ def calculate_match_score(resume_info: Dict[str, Any], job_info: Dict[str, Any])
     Returns:
         Dictionary with match scores and feedback
     """
-    
-    # Convert inputs to JSON strings for the prompt
-    resume_json = json.dumps(resume_info)
-    job_json = json.dumps(job_info)
+    # Convert input data to JSON strings for the prompt
+    resume_json = json.dumps(resume_info, indent=2)
+    job_json = json.dumps(job_info, indent=2)
     
     prompt = f"""
-    You are an expert AI assistant specialized in evaluating candidate profiles against job requirements.
+    You are an expert AI assistant specialized in evaluating how well a candidate's resume matches a job description.
     
-    Please analyze the following resume information and job description to calculate match scores and provide feedback.
+    Analyze the provided resume information and job description information (both in JSON format) and calculate:
     
-    Resume Information:
-    {resume_json}
-    
-    Job Requirements:
-    {job_json}
-    
-    Calculate the following scores and provide feedback:
-    
-    1. Skills Match: Score from 0-100 based on how well the candidate's skills match the job's required skills
-    2. Experience Match: Score from 0-100 based on how well the candidate's experience matches the job's requirements
-    3. Education Match: Score from 0-100 based on how well the candidate's education matches the job's requirements
-    4. Overall Match: Weighted average of the above scores (skills: 50%, experience: 30%, education: 20%)
+    1. Skills match score (0-100): How well the candidate's technical and soft skills match the job requirements
+    2. Experience match score (0-100): How well the candidate's experience matches the job requirements
+    3. Education match score (0-100): How well the candidate's education matches the job requirements
+    4. Overall match score (0-100): A weighted calculation with skills (50%), experience (30%), and education (20%)
     
     Also provide:
-    1. Matching Skills: List of skills that match between resume and job requirements
-    2. Missing Skills: List of required skills not found in the resume
-    3. Recommendations: Specific suggestions for how the candidate could improve their match
+    - A list of matching skills found in both the resume and job description
+    - A list of missing skills that are in the job description but not in the resume
+    - 2-3 specific recommendations for the candidate to improve their fit for this role
+    - A brief summary of the candidate's fit for this role (2-3 sentences)
     
     Return the output as a valid JSON object with the following structure:
     {{
@@ -1408,6 +684,12 @@ def calculate_match_score(resume_info: Dict[str, Any], job_info: Dict[str, Any])
     }}
     
     Only respond with the JSON, nothing else.
+    
+    Resume Information:
+    {resume_json}
+    
+    Job Description Information:
+    {job_json}
     """
     
     try:
@@ -1431,3 +713,465 @@ def calculate_match_score(resume_info: Dict[str, Any], job_info: Dict[str, Any])
         print(f"Error calculating match score with Gemini: {e}")
         # Use a rules-based approach as fallback
         return calculate_match_score_fallback(resume_info, job_info)
+
+def calculate_enhanced_experience_match(resume_experience, job_experience):
+    """
+    Calculate how well the candidate's experience matches the job requirements and 
+    returns both the score and the matching/missing items
+    
+    Args:
+        resume_experience: List of candidate's experience items
+        job_experience: List of job experience requirements
+        
+    Returns:
+        Tuple of (match_score, matching_experience, missing_experience)
+    """
+    if not job_experience:
+        return 0.7, [], []  # Default score if no experience requirements
+    
+    # Check if candidate has any experience
+    if not resume_experience:
+        return 0.2, [], [f"{exp.get('domain', 'experience')} ({exp.get('years', '')} years)" 
+                          for exp in job_experience if isinstance(exp, dict)]
+    
+    # Extract required years and domains from job requirements
+    required_years = 0
+    required_domains = []
+    
+    for exp in job_experience:
+        if isinstance(exp, dict):
+            # Extract years requirement
+            years_text = exp.get("years", "")
+            if years_text:
+                # Extract numeric values from strings like "3+ years" or "2-4 years"
+                years_match = re.search(r'(\d+)', str(years_text))
+                if years_match:
+                    years = int(years_match.group(1))
+                    required_years = max(required_years, years)
+            
+            # Extract domain requirement
+            domain = exp.get("domain", "")
+            if domain:
+                required_domains.append(domain.lower())
+    
+    # Calculate total years of experience from resume
+    total_years = 0
+    candidate_domains = []
+    
+    for exp in resume_experience:
+        if isinstance(exp, dict):
+            # Try to calculate duration for this position
+            start_date = exp.get("start_date", "")
+            end_date = exp.get("end_date", "")
+            
+            # Extract years from dates
+            years = extract_years_from_dates(start_date, end_date)
+            total_years += years
+            
+            # Extract domains from experience
+            title = exp.get("title", "").lower() if exp.get("title") else ""
+            company = exp.get("company", "").lower() if exp.get("company") else ""
+            description = exp.get("description", "").lower() if exp.get("description") else ""
+            
+            # Create a combined text to search for domains
+            combined_text = f"{title} {company} {description}"
+            
+            # Use title as domain if it's a senior position
+            if title and any(senior_term in title.lower() for senior_term in 
+                            ["senior", "lead", "manager", "director", "head", "principal"]):
+                # Extract the domain part (e.g., "Senior Software Engineer" -> "Software Engineer")
+                domain_parts = title.split()
+                if len(domain_parts) > 1:
+                    candidate_domains.append(" ".join(domain_parts[1:]))
+                else:
+                    candidate_domains.append(title)
+            
+            # Add other relevant domains from the experience
+            for domain in ["software", "data", "marketing", "sales", "finance", "design", 
+                          "research", "management", "engineering", "development"]:
+                if domain in combined_text and domain not in candidate_domains:
+                    candidate_domains.append(domain)
+    
+    # Match domains using synonym matching
+    from relevance_scorer import extract_matching_items
+    domain_match_result = extract_matching_items(
+        candidate_domains, 
+        required_domains,
+        matcher_type="domain"
+    )
+    
+    matching_domains = domain_match_result["matching_items"]
+    missing_domains = domain_match_result["missing_items"]
+    
+    # Format matching and missing experience items
+    matching_experience = []
+    missing_experience = []
+    
+    # Create formatted matching experience items
+    if total_years > 0 and required_years > 0 and total_years >= required_years:
+        matching_experience.append(f"{total_years} years of experience (meets {required_years}+ requirement)")
+    
+    # Add matching domains
+    for domain in matching_domains:
+        matching_experience.append(f"Experience in {domain}")
+    
+    # Create formatted missing experience items
+    if total_years > 0 and required_years > 0 and total_years < required_years:
+        missing_experience.append(f"{required_years - total_years} more years of experience")
+    
+    # Add missing domains
+    for domain in missing_domains:
+        missing_experience.append(f"Experience in {domain}")
+    
+    # Calculate experience match score
+    years_match = min(1.0, total_years / required_years) if required_years > 0 else 0.7
+    domains_match = len(matching_domains) / len(required_domains) if required_domains else 0.7
+    
+    # Combine years and domain matches (years is more important)
+    experience_match = (0.7 * years_match) + (0.3 * domains_match)
+    
+    return experience_match, matching_experience, missing_experience
+
+def calculate_enhanced_education_match(resume_education, job_education):
+    """
+    Calculate how well the candidate's education matches the job requirements and 
+    returns both the score and the matching/missing items
+    
+    Args:
+        resume_education: List of candidate's education items
+        job_education: List of job education requirements
+        
+    Returns:
+        Tuple of (match_score, matching_education, missing_education)
+    """
+    if not job_education:
+        return 0.7, [], []  # Default score if no education requirements
+    
+    if not resume_education:
+        return 0.3, [], [f"{edu.get('degree', '')} in {edu.get('field', '')}" 
+                         for edu in job_education if isinstance(edu, dict)]
+    
+    # Define education levels for comparison
+    edu_levels = {
+        "high school": 1,
+        "associate": 2, 
+        "bachelor": 3,
+        "bachelors": 3, 
+        "undergraduate": 3,
+        "bs": 3, 
+        "ba": 3,
+        "master": 4,
+        "masters": 4,
+        "ms": 4, 
+        "ma": 4,
+        "mba": 4,
+        "phd": 5, 
+        "doctorate": 5
+    }
+    
+    # Extract required degree level and fields from job requirements
+    required_level = 0
+    required_fields = []
+    
+    for edu in job_education:
+        if isinstance(edu, dict):
+            degree = edu.get("degree", "").lower() if edu.get("degree") else ""
+            field = edu.get("field", "").lower() if edu.get("field") else ""
+            
+            # Determine the education level
+            for level_name, level_value in edu_levels.items():
+                if level_name in degree:
+                    required_level = max(required_level, level_value)
+                    break
+            
+            # Add field requirement
+            if field:
+                required_fields.append(field)
+            elif degree:
+                # If no specific field but degree is specified
+                required_fields.append(f"{degree}")
+        elif isinstance(edu, str):
+            # Handle case where education is a string
+            edu_lower = edu.lower()
+            for level_name, level_value in edu_levels.items():
+                if level_name in edu_lower:
+                    required_level = max(required_level, level_value)
+                    # Extract potential field
+                    if "in" in edu_lower:
+                        field_part = edu_lower.split("in", 1)[1].strip()
+                        if field_part:
+                            required_fields.append(field_part)
+                    else:
+                        required_fields.append(level_name)
+                    break
+    
+    # Extract candidate's education information
+    highest_level = 0
+    candidate_fields = []
+    
+    for edu in resume_education:
+        if isinstance(edu, dict):
+            degree = edu.get("degree", "").lower() if edu.get("degree") else ""
+            institution = edu.get("institution", "").lower() if edu.get("institution") else ""
+            
+            # Determine education level
+            for level_name, level_value in edu_levels.items():
+                if level_name in degree:
+                    highest_level = max(highest_level, level_value)
+                    break
+            
+            # Extract field from degree
+            field_parts = degree.split("in", 1)
+            if len(field_parts) > 1:
+                field = field_parts[1].strip()
+                if field:
+                    candidate_fields.append(field)
+            else:
+                # Use whole degree as field
+                candidate_fields.append(degree)
+                
+            # Add institution as potential field match
+            if institution:
+                candidate_fields.append(institution)
+    
+    # Match fields using synonym matching
+    from relevance_scorer import extract_matching_items
+    field_match_result = extract_matching_items(
+        candidate_fields, 
+        required_fields,
+        matcher_type="education"
+    )
+    
+    matching_fields = field_match_result["matching_items"]
+    missing_fields = field_match_result["missing_items"]
+    
+    # Format matching and missing education items
+    matching_education = []
+    missing_education = []
+    
+    # Check if required education level is met
+    level_names = {v: k for k, v in edu_levels.items()}
+    
+    if required_level > 0 and highest_level >= required_level:
+        matching_education.append(f"{level_names.get(highest_level, 'Education')} level (meets {level_names.get(required_level, '')} requirement)")
+    
+    # Add matching fields
+    for field in matching_fields:
+        matching_education.append(f"Education in {field}")
+    
+    # Add missing education level if not met
+    if required_level > 0 and highest_level < required_level:
+        missing_education.append(f"{level_names.get(required_level, 'Higher education')} level required")
+    
+    # Add missing fields
+    for field in missing_fields:
+        missing_education.append(f"Education in {field}")
+    
+    # Calculate match scores
+    level_match = min(1.0, highest_level / required_level) if required_level > 0 else 0.7
+    field_match = len(matching_fields) / len(required_fields) if required_fields else 0.7
+    
+    # Combine level and field matches
+    education_match = (0.6 * level_match) + (0.4 * field_match)
+    
+    return education_match, matching_education, missing_education
+
+def extract_years_from_dates(start_date, end_date):
+    """
+    Extract years of experience from date strings
+    """
+    if not start_date:
+        return 0
+    
+    # Extract years from date strings
+    try:
+        # Pattern for dates like "January 2020" or "Jan 2020" or "2020"
+        start_year_match = re.search(r'(\d{4})', str(start_date))
+        
+        # Handle end date - could be "Present" or actual date
+        end_year = None
+        if end_date and str(end_date).lower() != "present" and str(end_date).lower() != "current":
+            end_year_match = re.search(r'(\d{4})', str(end_date)) 
+            if end_year_match:
+                end_year = int(end_year_match.group(1))
+        else:
+            # If "Present", use current year
+            end_year = datetime.now().year
+        
+        if start_year_match and end_year:
+            start_year = int(start_year_match.group(1))
+            return max(0, end_year - start_year)  # Ensure non-negative
+    except Exception as e:
+        print(f"Error extracting years: {e}")
+    
+    # Default to 1 year if we couldn't parse
+    return 1
+
+def answer_chat_question(question, resume_info, job_info, match_analysis):
+    """
+    Answer a chat question about the resume match using Gemini AI
+    
+    Args:
+        question: The user's question
+        resume_info: Structured resume information
+        job_info: Structured job requirements
+        match_analysis: Match analysis results
+        
+    Returns:
+        String with the answer to the question
+    """
+    # Convert input data to JSON strings for the prompt
+    resume_json = json.dumps(resume_info, indent=2)
+    job_json = json.dumps(job_info, indent=2)
+    match_json = json.dumps(match_analysis, indent=2)
+    
+    prompt = f"""
+    You are an AI resume advisor helping a job seeker understand how their resume matches a job description.
+    
+    Answer the user's question based on the detailed resume information, job requirements, and match analysis provided below.
+    Be specific, comprehensive, and helpful in your response. If the user is asking about gaps or how to improve,
+    provide detailed and actionable advice.
+    
+    When discussing missing skills, experience, or education requirements, list ALL of them, not just a few examples.
+    Provide comprehensive details about what the job requires and what the candidate is missing.
+    
+    Format your response with Markdown for readability.
+    
+    User's question: {question}
+    
+    Resume information:
+    {resume_json}
+    
+    Job requirements:
+    {job_json}
+    
+    Match analysis:
+    {match_json}
+    """
+    
+    try:
+        response = model.generate_content(prompt)
+        return response.text
+    except Exception as e:
+        print(f"Error generating chat response with Gemini: {e}")
+        # Fallback response
+        return generate_fallback_answer(question, resume_info, job_info, match_analysis)
+
+def generate_fallback_answer(question, resume_info, job_info, match_analysis):
+    """
+    Generate a fallback answer when AI fails
+    """
+    # Extract key information for the fallback response
+    scores = match_analysis.get("scores", {})
+    overall_match = scores.get("overall_match", 0)
+    skills_match = scores.get("skills_match", 0)
+    experience_match = scores.get("experience_match", 0)
+    education_match = scores.get("education_match", 0)
+    
+    # Get specific data points
+    matching_skills = match_analysis.get("matching_skills", [])
+    missing_skills = match_analysis.get("missing_skills", [])
+    
+    # Get all missing experience details
+    missing_experience = match_analysis.get("missing_experience", [])
+    
+    # Get all missing education details
+    missing_education = match_analysis.get("missing_education", [])
+    
+    # Get recommendations
+    recommendations = match_analysis.get("recommendations", [])
+    
+    # Create a detailed response based on the question keywords
+    question_lower = question.lower()
+    
+    if "skill" in question_lower or "missing" in question_lower:
+        response = f"### Skills Analysis\n\n"
+        response += f"**Skills Match Score:** {skills_match}%\n\n"
+        
+        response += f"**Matching Skills ({len(matching_skills)}):**\n"
+        if matching_skills:
+            response += ", ".join(matching_skills)
+        else:
+            response += "None found"
+        response += "\n\n"
+        
+        response += f"**Missing Skills ({len(missing_skills)}):**\n"
+        if missing_skills:
+            response += ", ".join(missing_skills)
+        else:
+            response += "None identified"
+        response += "\n\n"
+        
+        response += "**Recommendations for skills improvement:**\n"
+        for rec in [r for r in recommendations if "skill" in r.lower()]:
+            response += f"- {rec}\n"
+    
+    elif "experience" in question_lower:
+        response = f"### Experience Analysis\n\n"
+        response += f"**Experience Match Score:** {experience_match}%\n\n"
+        
+        if job_info.get("experience"):
+            response += "**Required Experience:**\n"
+            for exp in job_info.get("experience"):
+                if isinstance(exp, dict):
+                    years = exp.get("years", "")
+                    domain = exp.get("domain", "")
+                    response += f"- {years} in {domain}\n" if years and domain else ""
+        
+        if missing_experience:
+            response += "\n**Missing Experience:**\n"
+            for exp in missing_experience:
+                response += f"- {exp}\n"
+    
+    elif "education" in question_lower:
+        response = f"### Education Analysis\n\n"
+        response += f"**Education Match Score:** {education_match}%\n\n"
+        
+        if job_info.get("education"):
+            response += "**Required Education:**\n"
+            for edu in job_info.get("education"):
+                if isinstance(edu, dict):
+                    degree = edu.get("degree", "")
+                    field = edu.get("field", "")
+                    response += f"- {degree} in {field}\n" if degree else ""
+        
+        if missing_education:
+            response += "\n**Missing Education:**\n"
+            for edu in missing_education:
+                response += f"- {edu}\n"
+    
+    elif "improve" in question_lower or "better" in question_lower:
+        response = f"### Improvement Recommendations\n\n"
+        response += "Here are ways to improve your resume for this job:\n\n"
+        
+        for rec in recommendations:
+            response += f"- {rec}\n"
+        
+        # Add specific advice based on lowest score
+        lowest_category = "skills"
+        lowest_score = skills_match
+        
+        if experience_match < lowest_score:
+            lowest_category = "experience"
+            lowest_score = experience_match
+        
+        if education_match < lowest_score:
+            lowest_category = "education"
+        
+        response += f"\nFocus most on improving your **{lowest_category}** as it's your lowest match category."
+    
+    else:
+        # General response
+        response = f"### Resume Match Analysis\n\n"
+        response += f"**Overall Match:** {overall_match}%\n\n"
+        
+        response += "**Breakdown:**\n"
+        response += f"- Skills Match: {skills_match}%\n"
+        response += f"- Experience Match: {experience_match}%\n"
+        response += f"- Education Match: {education_match}%\n\n"
+        
+        response += "**Key Recommendations:**\n"
+        for rec in recommendations[:3]:
+            response += f"- {rec}\n"
+    
+    return response
