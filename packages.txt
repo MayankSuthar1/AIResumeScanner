@@ -1,0 +1,3 @@
+tesseract-ocr
+# Add any other language-specific packages you need (e.g., tesseract-ocr-eng)
+tesseract-ocr-eng
