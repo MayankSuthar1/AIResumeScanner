@@ -30,6 +30,10 @@ with st.sidebar:
     st.markdown("---")
     
     if st.button("Start Over", key="start_over_btn", use_container_width=True):
+        # Reset session state but preserve API connection info
+        api_key = st.session_state.api_key
+        api_connected = st.session_state.api_connected
+        
         # Reset session state
         st.session_state.uploaded_resumes = []
         st.session_state.job_description = ""
@@ -41,7 +45,13 @@ with st.sidebar:
         st.session_state.resume_parsed = False
         st.session_state.messages = []
         st.session_state.user_name = ""
-        st.session_state.ui_state = "upload_resume"
+        
+        # Preserve API connection state
+        st.session_state.api_key = api_key
+        st.session_state.api_connected = api_connected
+        
+        # Go directly to upload resume screen if API is connected
+        st.session_state.ui_state = "upload_resume" if api_connected else "api_key_input"
         st.rerun()
     
     if st.session_state.get('resume_parsed', False):
@@ -95,25 +105,118 @@ if 'resume_parsed' not in st.session_state:
     st.session_state.resume_parsed = False
 if 'user_name' not in st.session_state:
     st.session_state.user_name = ""
+# API key related session state
+if 'api_key' not in st.session_state:
+    st.session_state.api_key = ""
+if 'api_connected' not in st.session_state:
+    st.session_state.api_connected = False
 
 # Main UI with Chat Interface
 # Define the steps of the UI flow
 if 'ui_state' not in st.session_state:
-    st.session_state.ui_state = "upload_resume"
+    st.session_state.ui_state = "api_key_input" if not st.session_state.get('api_connected', False) else "upload_resume"
+
+# Step 0: API Key Input
+if st.session_state.ui_state == "api_key_input":
+    st.header("Welcome to AI-Powered Resume Scanner")
+    
+    # Check if there's an API key in the environment variables
+    env_api_key = os.environ.get("GOOGLE_API_KEY")
+    if env_api_key:
+        st.success("Found Gemini API key in environment variables.")
+        st.session_state.api_key = env_api_key
+        st.session_state.api_connected = True
+        st.session_state.ui_state = "upload_resume"
+        st.rerun()
+    
+    st.write("To use the AI-powered features, please provide your Google Gemini API key.")
+    
+    with st.expander("How to get a Gemini API key", expanded=False):
+        st.write("""
+        1. Go to [Google AI Studio](https://ai.google.dev/)
+        2. Sign in with your Google account
+        3. Navigate to 'API keys' in your account settings
+        4. Create a new API key
+        5. Copy the API key and paste it below
+        """)
+    
+    # Create a form for API key input
+    with st.form("api_key_form"):
+        api_key = st.text_input("Enter your Gemini API key:", type="password")
+        submitted = st.form_submit_button("Connect", type="primary", use_container_width=True)
+        
+        if submitted and api_key:
+            with st.spinner("Connecting to Gemini API..."):
+                # Test the API key
+                try:
+                    from ai_helper import configure_gemini_api
+                    configure_gemini_api(api_key)
+                    # Save the working API key to session state
+                    st.session_state.api_key = api_key
+                    st.session_state.api_connected = True
+                    st.success("Successfully connected to Gemini API!")
+                    st.session_state.ui_state = "upload_resume"
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Failed to connect to Gemini API: {e}")
+                    st.session_state.api_connected = False
+    
+    # Additional information about the app
+    st.markdown("---")
+    st.write("""
+    ### About this Application
+    
+    This AI-powered resume scanner helps you analyze how well your resume matches specific job descriptions. 
+    The application will:
+    
+    - Extract information from your resume
+    - Analyze the requirements from job descriptions
+    - Calculate match scores for skills, experience, and education
+    - Provide recommendations to improve your match
+    
+    Your API key is only stored temporarily in your session and is not saved permanently.
+    """)
 
 # Step 1: Upload Resume Section
-if st.session_state.ui_state == "upload_resume":
+elif st.session_state.ui_state == "upload_resume":
     st.header("Upload Your Resume")
     
-    uploaded_file = st.file_uploader(
-        "Upload your resume (PDF, DOCX, DOC)", 
-        accept_multiple_files=False,
-        type=["pdf", "docx", "doc"]
-    )
+    # Initialize processing state in session state if not exists
+    if 'resume_processing' not in st.session_state:
+        st.session_state.resume_processing = False
     
-    if uploaded_file and allowed_file(uploaded_file.name):
-        if st.button("Process Resume"):
-            with st.spinner("Parsing your resume..."):
+    # Only show file uploader if not in processing state
+    if not st.session_state.resume_processing:
+        uploaded_file = st.file_uploader(
+            "Upload your resume (PDF, DOCX, DOC)", 
+            accept_multiple_files=False,
+            type=["pdf", "docx", "doc"]
+        )
+        
+        if uploaded_file and allowed_file(uploaded_file.name):
+            # Store uploaded file in session state so we can access it during processing
+            st.session_state._uploaded_file = uploaded_file
+            
+            if st.button("Process Resume"):
+                # Set processing state to true
+                st.session_state.resume_processing = True
+                st.rerun()  # Rerun to update UI
+    else:
+        # Show disabled file uploader during processing
+        st.file_uploader(
+            "Upload your resume (PDF, DOCX, DOC)",
+            accept_multiple_files=False,
+            type=["pdf", "docx", "doc"],
+            disabled=True
+        )
+    
+    # Process the resume if in processing state
+    if st.session_state.resume_processing:
+        with st.spinner("Parsing your resume..."):
+            # Get the uploaded file from session state
+            uploaded_file = st.session_state.get('_uploaded_file')
+            
+            if uploaded_file and allowed_file(uploaded_file.name):
                 # Create a temporary file to store the uploaded file
                 with tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(uploaded_file.name)[1]) as tmp_file:
                     tmp_file.write(uploaded_file.getvalue())
@@ -141,15 +244,30 @@ if st.session_state.ui_state == "upload_resume":
                 # Store in the historical resumes list (in-memory storage)
                 st.session_state.stored_resumes.append(parsed_resume)
                 
+                # Reset processing state
+                st.session_state.resume_processing = False
+                
                 # Move to the next UI state
                 st.session_state.ui_state = "job_description"
                 st.session_state.resume_parsed = True
                 
                 st.rerun()
+            else:
+                st.error("No resume file found. Please upload a valid resume file.")
+                st.session_state.resume_processing = False
+                st.rerun()
 
 # Step 2: Job Description Input
 elif st.session_state.ui_state == "job_description":
     st.header("Enter Job Description")
+    
+    # Initialize job processing state if not exists
+    if 'job_processing' not in st.session_state:
+        st.session_state.job_processing = False
+        
+    # Store job description in session state if entered
+    if 'current_job_description' not in st.session_state:
+        st.session_state.current_job_description = ""
     
     # Show resume summary
     with st.expander("Resume Summary", expanded=False):
@@ -176,28 +294,42 @@ elif st.session_state.ui_state == "job_description":
                     st.write("**Soft Skills:**")
                     st.write(", ".join(skills.get("soft", [])[:5]) + ("..." if len(skills.get("soft", [])) > 5 else ""))
     
-    # Job description text area
-    job_description = st.text_area(
-        "Enter the job description below:", 
-        height=300,
-        placeholder="Paste the full job description here..."
-    )
+    # Job description text area - enabled when not processing
+    if not st.session_state.job_processing:
+        job_description = st.text_area(
+            "Enter the job description below:", 
+            height=300,
+            placeholder="Paste the full job description here...",
+            value=st.session_state.current_job_description
+        )
+        # Store the current job description
+        if job_description:
+            st.session_state.current_job_description = job_description
+    else:
+        # Show disabled text area during processing
+        st.text_area(
+            "Enter the job description below:", 
+            height=300,
+            value=st.session_state.current_job_description,
+            disabled=True
+        )
+        job_description = st.session_state.current_job_description
     
     # Create columns for the analyze button and processing status
     col1, col2 = st.columns([1, 3])
     
-    # Process job description button
-    analyze_button = col1.button("Analyze Match", type="primary", use_container_width=True)
+    # Process job description button - only show when not processing
+    if not st.session_state.job_processing:
+        analyze_button = col1.button("Analyze Match", type="primary", use_container_width=True)
+        if analyze_button and job_description:
+            st.session_state.job_processing = True
+            st.rerun()  # Rerun to update UI
+    else:
+        # Disabled button during processing
+        col1.button("Analyzing...", disabled=True, use_container_width=True)
     
-    # Store the analyze status in session state
-    if 'analyze_clicked' not in st.session_state:
-        st.session_state.analyze_clicked = False
-    
-    if analyze_button:
-        st.session_state.analyze_clicked = True
-    
-    # Show processing animation when button is clicked
-    if st.session_state.analyze_clicked and job_description:
+    # Process job if in processing state
+    if st.session_state.job_processing and job_description:
         with col2:
             with st.spinner("Analyzing job description and calculating match..."):
                 # Store job description
@@ -359,8 +491,8 @@ elif st.session_state.ui_state == "job_description":
                 greeting = f"Hi {st.session_state.user_name}! 👋" if st.session_state.user_name != "there" else "Hi there! 👋"
                 st.session_state.messages = [{"role": "assistant", "content": f"{greeting} Here's my analysis of your resume match:\n\n{response}"}]
                 
-                # Reset the analyze_clicked state
-                st.session_state.analyze_clicked = False
+                # Reset the processing state
+                st.session_state.job_processing = False
                 
                 # Move to chat UI
                 st.session_state.ui_state = "chat"
@@ -368,43 +500,159 @@ elif st.session_state.ui_state == "job_description":
 
 # Step 3: Chat UI
 elif st.session_state.ui_state == "chat":
-    # st.header("Resume Match Analysis & Chat")
+    # Create columns for the match score and view resume details button
+    col1, col2 = st.columns([1, 1])
     
-    # # Show match score
-    # if st.session_state.ranked_resumes:
-    #     resume = st.session_state.ranked_resumes[0]
-    #     match_score = resume.get("match_score", 0)
-    #     st.metric("Overall Match", f"{match_score:.1f}%")
+    # Show match score
+    if st.session_state.ranked_resumes:
+        resume = st.session_state.ranked_resumes[0]
+        match_score = resume.get("match_score", 0)
+        col1.metric("Overall Match", f"{match_score:.1f}%")
+    
+    # Show resume details in an expander
+    with st.expander("View Extracted Resume Details", expanded=False):
+        if st.session_state.ranked_resumes:
+            resume = st.session_state.ranked_resumes[0]
+            parsed_data = resume.get("parsed_data", {})
+            
+            # Contact Information
+            st.markdown("#### Contact Information")
+            contact_info = parsed_data.get("contact_info", {})
+            if contact_info:
+                for key, value in contact_info.items():
+                    if value:
+                        st.write(f"**{key.capitalize()}:** {value}")
+            
+            # Education
+            st.markdown("#### Education")
+            education = parsed_data.get("education", [])
+            if education:
+                for edu in education:
+                    if isinstance(edu, dict):
+                        edu_parts = []
+                        if edu.get("degree"):
+                            edu_parts.append(f"**Degree:** {edu.get('degree')}")
+                        if edu.get("institution"):
+                            edu_parts.append(f"**Institution:** {edu.get('institution')}")
+                        if edu.get("graduation_date"):
+                            edu_parts.append(f"**Graduation Date:** {edu.get('graduation_date')}")
+                        if edu_parts:
+                            st.markdown(" | ".join(edu_parts))
+                            st.markdown("---")
+            else:
+                st.write("No education information extracted")
+            
+            # Experience
+            st.markdown("#### Work Experience")
+            experience = parsed_data.get("experience", [])
+            if experience:
+                for exp in experience:
+                    if isinstance(exp, dict):
+                        if exp.get("company") or exp.get("title"):
+                            st.markdown(f"**{exp.get('title', '')}** at **{exp.get('company', '')}**")
+                        
+                        date_range = []
+                        if exp.get("start_date"):
+                            date_range.append(exp.get("start_date"))
+                        if exp.get("end_date"):
+                            date_range.append(exp.get("end_date"))
+                        
+                        if date_range:
+                            st.write(f"*{' - '.join(date_range)}*")
+                        
+                        if exp.get("description"):
+                            st.write(exp.get("description"))
+                        
+                        if exp.get("achievements"):
+                            st.markdown("**Achievements:**")
+                            for achievement in exp.get("achievements"):
+                                st.markdown(f"- {achievement}")
+                        
+                        st.markdown("---")
+            else:
+                st.write("No experience information extracted")
+            
+            # Skills
+            st.markdown("#### Skills")
+            skills = parsed_data.get("skills", {})
+            
+            # Technical skills
+            if isinstance(skills, dict) and skills.get("technical"):
+                st.markdown("**Technical Skills:**")
+                st.write(", ".join(skills.get("technical")))
+            
+            # Soft skills
+            if isinstance(skills, dict) and skills.get("soft"):
+                st.markdown("**Soft Skills:**")
+                st.write(", ".join(skills.get("soft")))
+            
+            if not isinstance(skills, dict) or (not skills.get("technical") and not skills.get("soft")):
+                st.write("No skills information extracted")
+            
+            # Certifications
+            certifications = parsed_data.get("certifications", [])
+            if certifications:
+                st.markdown("#### Certifications")
+                for cert in certifications:
+                    st.markdown(f"- {cert}")
+    
+    # Add horizontal separator
+    st.markdown("---")
     
     # Display chat messages
     for message in st.session_state.messages:
         with st.chat_message(message["role"]):
             st.write(message["content"])
     
-    # Get user input
-    if prompt := st.chat_input(f"Ask a question about your resume match..."):
-        # Add user message to chat history
-        st.session_state.messages.append({"role": "user", "content": prompt})
+    # Variable to track if we're in processing state
+    is_processing = st.session_state.get("is_processing", False)
+    
+    # Get user input (disable when processing)
+    if not is_processing:
+        prompt = st.chat_input(f"Ask a question about your resume match...")
         
-        # Display user message
-        with st.chat_message("user"):
-            st.write(prompt)
+        if prompt:
+            # Set processing state to true
+            st.session_state.is_processing = True
+            
+            # Add user message to chat history
+            st.session_state.messages.append({"role": "user", "content": prompt})
+            st.rerun()  # Rerun to disable the input
+    else:
+        # Just show the disabled input placeholder during processing
+        st.chat_input(f"Processing your question...", disabled=True)
+    
+    # Process user question if we have a new prompt
+    if st.session_state.get("is_processing", False) and not st.session_state.get("processing_complete", False):
+        # Get the last user message
+        last_user_message = next((msg["content"] for msg in reversed(st.session_state.messages) 
+                                if msg["role"] == "user"), None)
         
-        # Process user question
-        with st.chat_message("assistant"):
-            with st.spinner("Analyzing your question..."):
-                # This is a follow-up question about the job match analysis
-                resume = st.session_state.ranked_resumes[0]
-                resume_info = resume.get("parsed_data", {})
-                job_info = st.session_state.job_requirements
-                match_analysis = resume.get("match_analysis", {})
-                
-                # Use AI to answer the question
-                from ai_helper import answer_chat_question
-                answer = answer_chat_question(prompt, resume_info, job_info, match_analysis)
-                
-                # Add response to chat history
-                st.session_state.messages.append({"role": "assistant", "content": answer})
-                
-                # Display the response
-                st.write(answer)
+        if last_user_message:
+            # Display user message
+            with st.chat_message("user"):
+                st.write(last_user_message)
+            
+            # Process user question
+            with st.chat_message("assistant"):
+                with st.spinner("Analyzing your question..."):
+                    # This is a follow-up question about the job match analysis
+                    resume = st.session_state.ranked_resumes[0]
+                    resume_info = resume.get("parsed_data", {})
+                    job_info = st.session_state.job_requirements
+                    match_analysis = resume.get("match_analysis", {})
+                    
+                    # Use AI to answer the question
+                    from ai_helper import answer_chat_question
+                    answer = answer_chat_question(last_user_message, resume_info, job_info, match_analysis)
+                    
+                    # Add response to chat history
+                    st.session_state.messages.append({"role": "assistant", "content": answer})
+                    
+                    # Display the response
+                    st.write(answer)
+                    
+                    # Reset processing states
+                    st.session_state.is_processing = False
+                    st.session_state.processing_complete = False
+                    st.rerun()  # Rerun to re-enable the input

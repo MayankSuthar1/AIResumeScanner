@@ -3,6 +3,8 @@ from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 from ai_helper import calculate_match_score
 # from database import save_job_match
+from ai_helper import calculate_enhanced_education_match, calculate_enhanced_experience_match
+
 import re
 
 def calculate_relevance_scores(parsed_resumes, job_requirements, job_title="", job_description=""):
@@ -22,23 +24,39 @@ def calculate_relevance_scores(parsed_resumes, job_requirements, job_title="", j
         try:
             # Use Gemini AI to calculate match score
             print(f"Using Gemini AI to calculate match score for {resume.get('filename', 'resume')}")
-            # resume_id = resume.get("resume_id")
             resume_info = resume.get("parsed_data", {})
             
             # Calculate match using AI
             match_analysis = calculate_match_score(resume_info, job_requirements)
             
-            # Save match data to database if resume_id is available
-            # if resume_id and job_title:
-            #     save_job_match(
-            #         resume_id=resume_id,
-            #         job_title=job_title,
-            #         job_description=job_description,
-            #         match_analysis=match_analysis
-            #     )
+            # Validate match analysis structure
+            if not isinstance(match_analysis, dict) or not match_analysis.get("scores"):
+                raise Exception("Invalid match analysis format returned")
+            
+            # Ensure scores are proper integers between 0-100
+            scores = match_analysis.get("scores", {})
+            for key, value in scores.items():
+                if not isinstance(value, (int, float)):
+                    scores[key] = 0
+                else:
+                    # Make sure it's within 0-100 range
+                    scores[key] = max(0, min(100, value))
             
             # Extract overall score
-            overall_score = match_analysis.get("scores", {}).get("overall_match", 0)
+            overall_score = scores.get("overall_match", 0)
+            
+            # Recalculate overall score if it seems unrealistic
+            if overall_score > 100 or overall_score < 0:
+                # Calculate weighted average of component scores
+                skills_match = scores.get("skills_match", 0)
+                experience_match = scores.get("experience_match", 0)
+                education_match = scores.get("education_match", 0)
+                
+                # Weighted average with skills (50%), experience (30%), education (20%)
+                overall_score = (skills_match * 0.5) + (experience_match * 0.3) + (education_match * 0.2)
+                overall_score = max(0, min(100, overall_score))  # Ensure it's 0-100
+                scores["overall_match"] = overall_score
+            
             relevance_scores.append(overall_score)
             match_data.append(match_analysis)
             
@@ -76,26 +94,33 @@ def calculate_relevance_scores(parsed_resumes, job_requirements, job_title="", j
             skills_match = 0
             matching_skills = []
             missing_skills = []
+            
             if job_skills and resume_skills:
-                skill_match_result = extract_matching_items(resume_skills, job_skills, matcher_type="skills")
+                skill_match_result = extract_matching_items(list(resume_skills), list(job_skills), matcher_type="skills")
                 matching_skills = skill_match_result["matching_items"]
                 missing_skills = skill_match_result["missing_items"]
-                skills_match = len(matching_skills) / len(job_skills) if job_skills else 0
+                # Calculate match percentage
+                if job_skills:
+                    skills_match = len(matching_skills) / len(job_skills) if len(job_skills) > 0 else 0
             
-            # Calculate experience match (enhanced)
-            experience_match = calculate_experience_match(
+            # Calculate experience match
+            experience_match, matching_exp, missing_exp = calculate_enhanced_experience_match(
                 resume.get("parsed_data", {}).get("experience", []), 
                 job_experience
             )
             
-            # Calculate education match (enhanced)
-            education_match = calculate_education_match(
+            # Calculate education match
+            education_match, matching_edu, missing_edu = calculate_enhanced_education_match(
                 resume.get("parsed_data", {}).get("education", []), 
                 job_education
             )
             
+            # Convert decimal scores to percentages (0-100 scale)
+            skills_match_pct = round(skills_match * 100)
+            experience_match_pct = round(experience_match * 100)
+            education_match_pct = round(education_match * 100)
+            
             # Calculate overall match score with weighted components
-            # FIX: Properly compute the weighted average (removing the parenthesis bug)
             overall_score = (
                 0.5 * skills_match + 
                 0.3 * experience_match + 
@@ -117,25 +142,20 @@ def calculate_relevance_scores(parsed_resumes, job_requirements, job_title="", j
             # Create a match analysis structure similar to AI output for consistency
             fallback_match = {
                 "scores": {
-                    "skills_match": round(skills_match * 100),
-                    "experience_match": round(experience_match * 100),
-                    "education_match": round(education_match * 100),
+                    "skills_match": skills_match_pct,
+                    "experience_match": experience_match_pct,
+                    "education_match": education_match_pct,
                     "overall_match": round(overall_score)
                 },
                 "matching_skills": matching_skills,
                 "missing_skills": missing_skills,
+                "matching_experience": matching_exp,
+                "missing_experience": missing_exp,
+                "matching_education": matching_edu, 
+                "missing_education": missing_edu,
                 "recommendations": recommendations,
                 "feedback_summary": feedback_summary
             }
-            
-            # Save fallback match data to database if resume_id is available
-            # if resume.get("resume_id") and job_title:
-            #     save_job_match(
-            #         resume_id=resume.get("resume_id"),
-            #         job_title=job_title,
-            #         job_description=job_description,
-            #         match_analysis=fallback_match
-            #     )
             
             relevance_scores.append(overall_score)
             match_data.append(fallback_match)

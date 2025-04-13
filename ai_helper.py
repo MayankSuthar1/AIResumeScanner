@@ -9,87 +9,103 @@ from PIL import Image
 import pytesseract
 from pdf2image import convert_from_path, convert_from_bytes
 from datetime import datetime
+import streamlit as st
 
-# Configure the Gemini API with your key
-GOOGLE_API_KEY = os.environ.get("GOOGLE_API_KEY")
+# Configure the Gemini API with your key - prioritize session state API key if available
+# GOOGLE_API_KEY = st.session_state.get('api_key') or os.environ.get("GOOGLE_API_KEY")
+# global model
+# if GOOGLE_API_KEY:
+#     # print("Warning: GOOGLE_API_KEY not set. AI features will not work.")
 
-if not GOOGLE_API_KEY:
-    print("Warning: GOOGLE_API_KEY not set. AI features will not work.")
 
-try:
-    # Configure the Gemini API
-    genai.configure(api_key=GOOGLE_API_KEY)
-    
-    # Use the specific model provided by the user
-    model_name = 'gemini-2.5-pro-exp-03-25'
-    model = None
-    
+def configure_gemini_api(GOOGLE_API_KEY: Optional[str] = None):
+    """
+    Configure the Gemini API with the provided API key and set up the model for use.
+    """
     try:
-        model = genai.GenerativeModel(model_name)
-        # Test with a simple prompt to verify it works
-        test_response = model.generate_content("Hello")
-        print(f"Successfully connected to Gemini AI using model: {model_name}")
-    except Exception as e:
-        print(f"Error connecting to model {model_name}: {e}")
-        # Try fallback models if the specified one doesn't work
-        fallback_models = [
-                            "gemini-2.5-pro-exp-03-25",
-                            "gemini-2.5-pro-preview-03-25",
-                            "gemini-2.0-flash-exp",
-                            "gemini-2.0-flash",
-                            "gemini-2.0-flash-001",
-                            "gemini-2.0-flash-exp-image-generation",
-                            "gemini-2.0-flash-lite-001",
-                            "gemini-2.0-flash-lite",
-                            "gemini-2.0-flash-lite-preview-02-05",
-                            "gemini-2.0-flash-lite-preview",
-                            "gemini-2.0-pro-exp",
-                            "gemini-2.0-pro-exp-02-05",
-                            "gemini-2.0-flash-thinking-exp-01-21",
-                            "gemini-2.0-flash-thinking-exp",
-                            "gemini-2.0-flash-thinking-exp-1219",
-                            "gemini-1.5-pro-latest",
-                            "gemini-1.5-pro-001",
-                            "gemini-1.5-pro-002",
-                            "gemini-1.5-pro",
-                            "gemini-1.5-flash-latest",
-                            "gemini-1.5-flash-001",
-                            "gemini-1.5-flash-001-tuning",
-                            "gemini-1.5-flash",
-                            "gemini-1.5-flash-002",
-                            "gemini-1.5-flash-8b",
-                            "gemini-1.5-flash-8b-001",
-                            "gemini-1.5-flash-8b-latest",
-                            "gemini-1.5-flash-8b-exp-0827",
-                            "gemini-1.5-flash-8b-exp-0924"
-                        ]
+        # Configure the Gemini API
+        genai.configure(api_key=GOOGLE_API_KEY)
         
-        for fallback_model in fallback_models:
-            try:
-                model = genai.GenerativeModel(fallback_model)
-                # Test with a simple prompt to verify it works
-                test_response = model.generate_content("Hello")
-                print(f"Successfully connected to Gemini AI using fallback model: {fallback_model}")
-                break
-            except Exception as e2:
-                print(f"Error connecting to fallback model {fallback_model}: {e2}")
-                continue
-    
-    if model is None:
-        print("Error: Could not connect to any Gemini model. AI features will not work.")
-        # Provide a dummy model that will be properly handled by the exception blocks
-        class DummyModel:
-            def generate_content(self, prompt):
-                raise Exception("No Gemini model available")
-        model = DummyModel()
+        # Use the specific model provided by the user
+        model_name = 'gemini-2.5-pro-exp-03-25'
+        model = None
+        
+        try:
+            model = genai.GenerativeModel(model_name)
+            # Test with a simple prompt to verify it works
+            test_response = model.generate_content("Hello")
+            print(f"Successfully connected to Gemini AI using model: {model_name} \n {test_response.text}")
+            st.session_state.model = model
+            return True
+            
+        except Exception as e:
+            print(f"Error connecting to model {model_name}: {e}")
+            
+            # Capture the original error message before trying fallbacks
+            original_error = str(e)
+            if "API key" in original_error or "authentication" in original_error.lower() or "invalid" in original_error.lower():
+                # This appears to be an API key issue - raise error immediately
+                raise Exception(f"Invalid API key: {original_error}")
+            
+            # Try fallback models if not an API key issue
+            fallback_models = [
+                                "gemini-2.5-pro-exp-03-25",
+                                "gemini-2.5-pro-preview-03-25",
+                                "gemini-2.0-flash-exp",
+                                "gemini-2.0-flash",
+                                "gemini-2.0-flash-001",
+                                "gemini-2.0-flash-exp-image-generation",
+                                "gemini-2.0-flash-lite-001",
+                                "gemini-2.0-flash-lite",
+                                "gemini-2.0-flash-lite-preview-02-05",
+                                "gemini-2.0-flash-lite-preview",
+                                "gemini-2.0-pro-exp",
+                                "gemini-2.0-pro-exp-02-05",
+                                "gemini-2.0-flash-thinking-exp-01-21",
+                                "gemini-2.0-flash-thinking-exp",
+                                "gemini-2.0-flash-thinking-exp-1219",
+                                "gemini-1.5-pro-latest",
+                                "gemini-1.5-pro-001",
+                                "gemini-1.5-pro-002",
+                                "gemini-1.5-pro",
+                                "gemini-1.5-flash-latest",
+                                "gemini-1.5-flash-001",
+                                "gemini-1.5-flash-001-tuning",
+                                "gemini-1.5-flash",
+                                "gemini-1.5-flash-002",
+                                "gemini-1.5-flash-8b",
+                                "gemini-1.5-flash-8b-001",
+                                "gemini-1.5-flash-8b-latest",
+                                "gemini-1.5-flash-8b-exp-0827",
+                                "gemini-1.5-flash-8b-exp-0924"
+                            ]
+            
+            for fallback_model in fallback_models:
+                try:
+                    model = genai.GenerativeModel(fallback_model)
+                    # Test with a simple prompt to verify it works
+                    test_response = model.generate_content("Hello")
+                    print(f"Successfully connected to Gemini AI using fallback model: {fallback_model}")
+                    if model:
+                        st.session_state.model = model
+                    return True
+                except Exception as e2:
+                    print(f"Error connecting to fallback model {fallback_model}: {e2}")
+                    continue
+            
+ 
+        if model is None:
+            print("Error: Could not connect to any Gemini model. AI features will not work.")
+            # Provide a dummy model that will be properly handled by the exception blocks
+            class DummyModel:
+                def generate_content(self, prompt):
+                    raise Exception("No Gemini model available")
+            model = DummyModel()
 
-except Exception as e:
-    print(f"Error configuring Gemini AI: {e}")
-    # Provide a dummy model that will be properly handled by the exception blocks
-    class DummyModel:
-        def generate_content(self, prompt):
-            raise Exception("Gemini AI configuration failed")
-    model = DummyModel()
+    except Exception as e:
+        print(f"Error configuring Gemini AI: {e}")
+        # Re-raise the exception to be handled by the caller
+        raise e
 
 def extract_text_from_pdf(pdf_path_or_data, use_ocr=True):
     """
@@ -305,6 +321,8 @@ def extract_resume_info(text_or_pdf_path: str, is_pdf=False) -> Dict[str, Any]:
     """
     
     try:
+        model = st.session_state.get('model', None)
+
         response = model.generate_content(prompt)
         
         # Extract the JSON from the response
@@ -438,6 +456,8 @@ def analyze_job_description(text: str) -> Dict[str, Any]:
     """
     
     try:
+        model = st.session_state.get('model', None)
+
         response = model.generate_content(prompt)
         
         # Extract the JSON from the response
@@ -693,6 +713,8 @@ def calculate_match_score(resume_info: Dict[str, Any], job_info: Dict[str, Any])
     """
     
     try:
+        model = st.session_state.get('model', None)
+
         response = model.generate_content(prompt)
         
         # Extract the JSON from the response
@@ -1050,6 +1072,8 @@ def answer_chat_question(question, resume_info, job_info, match_analysis):
     """
     
     try:
+        model = st.session_state.get('model', None)
+
         response = model.generate_content(prompt)
         return response.text
     except Exception as e:
